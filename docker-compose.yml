@@ -1,0 +1,51 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    # depends_on:
+    #   asr_service:
+    #     condition: service_healthy
+    volumes:
+      - ./sessions:/sessions
+      - ./run:/run/bridge
+    ports:
+      # Remote client (e.g. a phone) connects here. No authentication yet.
+      - "8000:8000"
+
+  asr_service:
+    build:
+      context: .
+      dockerfile: asr_service/Dockerfile
+    restart: unless-stopped
+    # SIGTERM makes the service finish the current session's remaining audio before exiting.
+    stop_grace_period: 30s
+    environment:
+      ASR_BRIDGE_PATH: /run/bridge/asr_service.sock
+      ASR_SAMPLING_RATE: "16000"
+      ASR_CHUNK_SECONDS: "1.0"
+      ASR_LOG_LEVEL: INFO
+    # healthcheck:
+      # Healthy once the bridge answers a ping with a pong (socket = ASR_BRIDGE_PATH).
+      # test:
+      #   - CMD
+      #   - python
+      #   - -c
+      #   - 'import socket,json;s=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect("/run/bridge/asr_service.sock");s.sendall(b"{\"command\":\"ping\"}\n");r=json.loads(s.makefile("rb").readline());raise SystemExit(0 if r.get("reply")=="pong" else 1)'
+      # interval: 5s
+      # timeout: 3s
+      # retries: 5
+      # start_period: 10s
+    volumes:
+      - ./sessions:/sessions
+      - ./run:/run/bridge
+
+  # llm_service:
+  #   build:
+  #     context: .
+  #     dockerfile: llm_service/Dockerfile
+
+  # video_service:
+  #   build:
+  #     context: .
+  #     dockerfile: video_service/Dockerfile
