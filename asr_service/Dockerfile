@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:25.08-py3
+FROM nvcr.io/nvidia/nemo-speech:26.07.00
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

@@ -1,5 +1,7 @@
 import signal
+import subprocess
 import threading
+from pathlib import Path
 
 from server.auth import authenticate
 from server.config import Config
@@ -9,6 +11,9 @@ from server.sessions import SessionManager
 from server.streaming import UnAuthorized, StreamingServer
 
 log = get_logger(__name__)
+
+# Where the Dockerfile extracts the MediaMTX release (relative to /app).
+MEDIAMTX_DIR = Path("mediamtx")
 
 
 class Server:
@@ -25,6 +30,7 @@ class Server:
             config.streaming_host, config.streaming_port, self.handle_message
         )
         # Every command we accept from the client: name -> (description, handler).
+        self.media_server: subprocess.Popen | None = None
         self.commands = {
             "establish_connection": (
                 "Authenticates the client with the key sent in the request.",
@@ -81,7 +87,28 @@ class Server:
             }
         return entry[1](message)
 
+    def init_media_server(self) -> None:
+        """Runs the mediamtx/mediamtx binary as a child process."""
+        if self.media_server is not None and self.media_server.poll() is None:
+            return
+        binary = MEDIAMTX_DIR / "mediamtx"
+        # Run from its own folder so it picks up the mediamtx.yml next to it.
+        self.media_server = subprocess.Popen([str(binary.resolve())], cwd=binary.parent)
+        log.info("started media server (pid %d)", self.media_server.pid)
+
+    def _stop_media_server(self) -> None:
+        if self.media_server is None:
+            return
+        self.media_server.terminate()
+        try:
+            self.media_server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.media_server.kill()
+            self.media_server.wait()
+        self.media_server = None
+
     def start(self) -> None:
+        self.init_media_server()
         self.services.start()
         self.streamer.start()
 
@@ -89,6 +116,7 @@ class Server:
         self.streamer.close()
         self.services.stop()
         self.sessions.stop()
+        self._stop_media_server()
 
     def __enter__(self) -> "Server":
         self.start()
