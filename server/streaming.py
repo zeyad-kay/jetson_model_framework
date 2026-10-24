@@ -28,7 +28,7 @@ class _Handler(socketserver.StreamRequestHandler):
                 message = json.loads(line)
                 if not isinstance(message, dict):
                     raise ValueError("message must be a JSON object")
-                reply = self.server.on_message(message)
+                reply = self.server.on_message(message, self.request.getsockname()[0])
             except UnAuthorized as close:
                 self.wfile.write(json.dumps(close.reply).encode() + b"\n")
                 return
@@ -47,13 +47,16 @@ class StreamingServer:
     """Listens on a TCP port for a remote client (e.g. a phone).
 
     Messages are one JSON object per line, e.g. {"command": "start_session"}.
-    Each is passed to on_message (called on a connection thread), and the
-    returned dict is sent back as the reply.
+    Each is passed to on_message (called on a connection thread) along with the
+    local address the client connected to, and the returned dict is sent back as
+    the reply.
 
-    There is no authentication, so only expose the port to a trusted network.
+    This class does no authentication itself: on_message decides what to accept
+    (and can raise UnAuthorized to reject a client and drop the connection).
+    Traffic is unencrypted, so only expose the port to a trusted network.
     """
 
-    def __init__(self, host: str, port: int, on_message: Callable[[dict], dict]):
+    def __init__(self, host: str, port: int, on_message: Callable[[dict, str], dict]):
         self.host = host
         self.port = port
         self._on_message = on_message

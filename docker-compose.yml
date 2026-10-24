@@ -9,9 +9,10 @@ services:
     volumes:
       - ./sessions:/sessions
       - ./run:/run/bridge
-    ports:
-      # Remote client (e.g. a phone) connects here. No authentication yet.
-      - "8000:8000"
+    # Host networking so the server sees the address clients reach it at (the
+    # hotspot's) and can hand back a publish URL that works. It listens on 8000
+    # (control) and 8554 (RTSP).
+    network_mode: host
 
   asr_service:
     build:
@@ -40,12 +41,20 @@ services:
       - ./sessions:/sessions
       - ./run:/run/bridge
 
-  # llm_service:
-  #   build:
-  #     context: .
-  #     dockerfile: llm_service/Dockerfile
+  llm_service:
+    build:
+      context: .
+      dockerfile: llm_service/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./sessions:/sessions
+      - ./run:/run/bridge
 
-  # video_service:
-  #   build:
-  #     context: .
-  #     dockerfile: video_service/Dockerfile
+  video_service:
+    build:
+      context: .
+      dockerfile: video_service/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./sessions:/sessions
+      - ./run:/run/bridge

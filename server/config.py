@@ -50,8 +50,10 @@ class Config:
     ping_timeout: float = 2.0
     log_level: str = "INFO"
     log_file: Optional[str] = None
-    # Secret the client's key is checked against. Empty rejects every client.
-    private_key: str = ""
+    # MediaMTX Control API (localhost only).
+    media_api_url: str = "http://127.0.0.1:9997"
+    # Where ffmpeg reads the published streams from (<url>/<session_id>).
+    media_rtsp_url: str = "rtsp://127.0.0.1:8554"
 
     @classmethod
     def load(cls, env_file: Optional[Union[str, Path]] = None) -> "Config":
@@ -83,5 +85,6 @@ class Config:
             ping_timeout=get("ping_timeout", float, defaults.ping_timeout),
             log_level=get("log_level", str, defaults.log_level),
             log_file=get("log_file", str, defaults.log_file),
-            private_key=get("private_key", str, defaults.private_key),
+            media_api_url=get("media_api_url", str, defaults.media_api_url),
+            media_rtsp_url=get("media_rtsp_url", str, defaults.media_rtsp_url),
         )
