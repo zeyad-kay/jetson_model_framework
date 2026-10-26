@@ -1,4 +1,4 @@
-"""Mock client for the server: starts a session, publishes an audio file to
+"""Mock client for the server: starts a session, publishes an audio+video file to
 MediaMTX over RTSP in real time, then stops the session and checks the result.
 
     python mock_client.py --host 192.168.4.1
@@ -63,10 +63,10 @@ def wait_for(condition, timeout: float, interval: float = 0.25) -> bool:
     return condition()
 
 
-def reference_pcm(file: str) -> bytes:
-    """The input file decoded to the PCM the server should end up recording."""
+def reference_pcm(audio_file: str) -> bytes:
+    """The audio file decoded to the PCM the server should end up recording."""
     return subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-i", file,
+        ["ffmpeg", "-loglevel", "error", "-i", audio_file,
          "-vn", "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "pipe:1"],
         capture_output=True, check=True,
     ).stdout
@@ -89,12 +89,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000, help="server control port")
-    parser.add_argument("--file", default=str(Path("obama_16k.mp3").expanduser()))
+    parser.add_argument("--video-file", default=str(Path(__file__).parent / "sample-30s.mp4"),
+                         help="video-only source (its own audio track, if any, is dropped)")
+    parser.add_argument("--audio-file", default=str(Path(__file__).parent / "obama_16k.mp3"),
+                         help="audio source muxed in alongside the video")
     parser.add_argument("--sessions-dir", help="the server's sessions folder, as seen from here")
     args = parser.parse_args()
 
     sessions_dir = Path(args.sessions_dir) if args.sessions_dir else None
-    expected = reference_pcm(args.file) if sessions_dir else None
+    expected = reference_pcm(args.audio_file) if sessions_dir else None
 
     with socket.create_connection((args.host, args.port), timeout=10) as sock:
         sock_file = sock.makefile("rb")
@@ -104,10 +107,11 @@ def main() -> None:
         if not check("start_session replied ok", session.get("ok") is True, session.get("error", "")):
             raise SystemExit("could not start session")
         session_id = session["session_id"]
-        check("reply has a url ending in the session id", str(session.get("url", "")).endswith(f"/{session_id}"))
+        check("reply has a url ending in the session id", str(session.get("streaming_url", "")).endswith(f"/{session_id}"))
 
         session_dir = sessions_dir / session_id if sessions_dir else None
         audio = session_dir / "audio" / "audio.pcm" if session_dir else None
+        video = session_dir / "video" / "video.ts" if session_dir else None
         if session_dir:
             check("session folder exists", session_dir.is_dir(), str(session_dir))
             missing = [name for name in SESSION_SUBDIRS if not (session_dir / name).is_dir()]
@@ -115,22 +119,28 @@ def main() -> None:
         else:
             skip("session folder", "no --sessions-dir")
 
-        url = session["url"]
-        # url = f"rtsp://localhost:8554/{session_id}"
-        print(f"publishing {args.file} to {url}")
-        # -re paces the file at its native rate, like a live microphone. The audio is
-        # sent as raw PCM so the recorded length is predictable.
+        url = session["streaming_url"]
+        print(f"publishing {args.video_file} (video) + {args.audio_file} (audio) to {url}")
+        # -re (once per input) paces each file at its native rate, like a live
+        # camera+mic. The video file's own audio track (if any) is dropped via
+        # the -map selection; audio comes only from --audio-file, re-encoded to
+        # AAC since RTSP/RTP needs a payload-able codec. Each stream runs to
+        # its own end (no -shortest), so a duration mismatch just means one
+        # stream keeps going alone after the other finishes.
+        #
+        # Video is re-encoded to H.264 (not stream-copied) with a short, fixed
+        # keyframe interval (-g, one per second at 30fps) rather than whatever
+        # GOP structure the source file happens to have - VideoReader's -c:v
+        # copy on the server side can only start recording from a keyframe, so
+        # a short source GOP matters more here than for a casual test file.
         publisher = subprocess.Popen([
-            "ffmpeg", "-re",
-            "-i", args.file,
-            "-vn", # no video
-            "-ac", "1", # mono
-            "-ar", str(SAMPLE_RATE), # sampling rate
-            "-f", # force 
-            "rtsp", url # media url
-
-            # "ffmpeg", "-re", "-stream_loop", "0", "-i", args.file,
-            # "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", "-f", "rtsp", url
+            "ffmpeg", "-re", "-i", args.video_file,
+            "-re", "-i", args.audio_file,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "veryfast", "-bf", "0",
+            "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+            "-c:a", "aac",
+            "-f", "rtsp", url,
         ])
         try:
             check("publisher finished cleanly", publisher.wait() == 0, f"exit code {publisher.returncode}")
@@ -140,6 +150,8 @@ def main() -> None:
         finally:
             if audio:
                 wait_until_size_settles(audio)
+            if video:
+                wait_until_size_settles(video)
             print("stop_session")
             stopped = command(sock_file, sock, {"command": "stop_session"})
             check("stop_session replied ok", stopped.get("ok") is True, stopped.get("error", ""))
@@ -150,6 +162,10 @@ def main() -> None:
         low, high = len(expected) * (1 - AUDIO_TOLERANCE), len(expected) * (1 + AUDIO_TOLERANCE)
         check("recorded audio length matches the input", low <= size <= high,
               f"{size} bytes, expected {len(expected)} ±{AUDIO_TOLERANCE:.0%}")
+
+    if video:
+        size = video.stat().st_size if video.exists() else 0
+        check("recorded video is non-empty", size > 0, f"{size} bytes")
 
     failed = [name for name, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

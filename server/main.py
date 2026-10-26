@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from server.config import Config
-from server.media import MediaServerClient, MediaServerError, StreamReader
+from server.media import AudioReader, MediaServerClient, MediaServerError, VideoReader
 from server.log import get_logger, setup_logging
 from server.services import ServiceManager
 from server.sessions import SessionManager
@@ -39,7 +39,8 @@ class Server:
         self.media = MediaServerClient(config.media_api_url)
         self.media_rtsp_url = config.media_rtsp_url.rstrip("/")
         self.media_port = urlsplit(config.media_rtsp_url).port or 8554
-        self.reader: StreamReader | None = None
+        self.audio_reader: AudioReader | None = None
+        self.video_reader: VideoReader | None = None
         self.media_server: subprocess.Popen | None = None
         self.commands = {
             "start_session": (
@@ -57,15 +58,20 @@ class Server:
         self._stop_reader()
         session = self.sessions.start()
         log.info("created session %s", session.id)
-        self.services.start_session(session.id)
+        # self.services.start_session(session.id)
         try:
             self.media.add_path(session.id)
         except MediaServerError as exc:
             log.warning("could not create media path %s: %s", session.id, exc)
-        self.reader = StreamReader(
-            f"{self.media_rtsp_url}/{session.id}", self.sessions.write_audio
+        stream_url = f"{self.media_rtsp_url}/{session.id}"
+        self.audio_reader = AudioReader(
+            stream_url, self.media, session.id, session.audio_dir / "audio.pcm"
         )
-        self.reader.start()
+        self.audio_reader.start()
+        self.video_reader = VideoReader(
+            stream_url, self.media, session.id, session.video_dir / "video.ts"
+        )
+        self.video_reader.start()
         return {
             "ok": True,
             "session_id": session.id,
@@ -78,7 +84,7 @@ class Server:
         if session is None:
             return {"ok": False, "error": "no active session"}
         self._stop_reader()
-        self.services.stop_session()
+        # self.services.stop_session()
         try:
             self.media.delete_path(session.id)
         except MediaServerError as exc:
@@ -114,9 +120,12 @@ class Server:
         log.info("started media server (pid %d)", self.media_server.pid)
 
     def _stop_reader(self) -> None:
-        if self.reader is not None:
-            self.reader.stop()
-            self.reader = None
+        if self.audio_reader is not None:
+            self.audio_reader.stop()
+            self.audio_reader = None
+        if self.video_reader is not None:
+            self.video_reader.stop()
+            self.video_reader = None
 
     def _stop_media_server(self) -> None:
         self._stop_reader()
@@ -132,13 +141,13 @@ class Server:
 
     def start(self) -> None:
         self.init_media_server()
-        self.services.start()
+        # self.services.start()
         self.streamer.start()
 
     def stop(self) -> None:
         self.streamer.close()
         self._stop_reader()
-        self.services.stop()
+        # self.services.stop()
         self.sessions.stop()
         self._stop_media_server()
 

@@ -51,17 +51,3 @@ class AudioWriter:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-
-
-class VideoWriter:
-    """Writes a realtime video stream to a file. Not implemented yet."""
-
-    def __init__(self, path: Union[str, Path], append: bool = False):
-        self.path = Path(path)
-        self.append = append
-
-    def write(self, chunk: Union[bytes, bytearray, memoryview]) -> None:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        pass

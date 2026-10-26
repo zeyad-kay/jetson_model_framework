@@ -43,13 +43,13 @@ class Config:
         "/run/bridge/video_service.sock",
     )
     # Root of the shared volume that holds one folder per session.
-    sessions_dir: str = "/sessions"
+    sessions_dir: str = "./sessions"
     # Ping the services in the background while a session is running.
     monitor: bool = True
     ping_interval: float = 20.0
     ping_timeout: float = 2.0
     log_level: str = "INFO"
-    log_file: Optional[str] = None
+    log_file: Optional[str] = "server.log"
     # MediaMTX Control API (localhost only).
     media_api_url: str = "http://127.0.0.1:9997"
     # Where ffmpeg reads the published streams from (<url>/<session_id>).

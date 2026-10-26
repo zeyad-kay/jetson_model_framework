@@ -16,8 +16,8 @@ def setup_logging(
     """Configures the server logger. Call once at startup.
 
     level defaults to the SERVER_LOG_LEVEL environment variable, then INFO.
-    Logs go to stderr, and also to log_file if given. Repeated calls do
-    nothing, so handlers are never duplicated.
+    Logs go to log_file if given, else to stderr. Repeated calls do nothing,
+    so handlers are never duplicated.
     """
     global _configured
     if _configured:
@@ -30,11 +30,12 @@ def setup_logging(
     root.propagate = False  # don't double-log through the global root logger
 
     formatter = logging.Formatter(FORMAT)
-    handlers = [logging.StreamHandler()]
     if log_file is not None:
         path = Path(log_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(path, encoding="utf-8"))
+        handlers = [logging.FileHandler(path, mode="w", encoding="utf-8")]
+    else:
+        handlers = [logging.StreamHandler()]
     for handler in handlers:
         handler.setFormatter(formatter)
         root.addHandler(handler)
