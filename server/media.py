@@ -185,6 +185,46 @@ class AudioReader(_FfmpegReader):
         ]
 
 
+def pcm_to_mp3(pcm_path: Union[str, Path], mp3_path: Union[str, Path], sample_rate: int = 16000) -> bool:
+    """Converts raw 16-bit mono PCM (as written by AudioReader) to an mp3. True on success."""
+    pcm_path = Path(pcm_path)
+    if not pcm_path.exists() or pcm_path.stat().st_size == 0:
+        log.warning("no audio to convert at %s", pcm_path)
+        return False
+    result = subprocess.run(
+        [
+            "ffmpeg", "-loglevel", "error", "-y",
+            "-f", "s16le", "-ac", "1", "-ar", str(sample_rate),
+            "-i", str(pcm_path), str(mp3_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        log.warning("pcm to mp3 failed: %s", result.stderr.decode(errors="replace").strip())
+        return False
+    return True
+
+
+def ts_to_mp4(ts_path: Union[str, Path], mp4_path: Union[str, Path]) -> bool:
+    """Converts raw mpeg-ts to an mp4. True on success."""
+    ts_path = Path(ts_path)
+    if not ts_path.exists() or ts_path.stat().st_size == 0:
+        log.warning("no audio to convert at %s", ts_path)
+        return False
+    result = subprocess.run(
+        [
+            "ffmpeg", "-loglevel", "error", "-y",
+            "-i", str(ts_path), str(mp4_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        log.warning("ts to mp4 failed: %s", result.stderr.decode(errors="replace").strip())
+        return False
+    return True
+
 class VideoReader(_FfmpegReader):
     """Reads a MediaMTX stream's video into `output_path`, copying the encoded
     packets as-is (no decoding/re-encoding).

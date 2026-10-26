@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from server.config import Config
-from server.media import AudioReader, MediaServerClient, MediaServerError, VideoReader
+from server.media import AudioReader, MediaServerClient, MediaServerError, VideoReader, pcm_to_mp3, ts_to_mp4
 from server.log import get_logger, setup_logging
 from server.services import ServiceManager
 from server.sessions import SessionManager
@@ -16,6 +16,8 @@ log = get_logger(__name__)
 
 # Where the Dockerfile extracts the MediaMTX release (relative to /app).
 MEDIAMTX_DIR = Path("mediamtx")
+# The config that ships with the server, next to this file.
+MEDIAMTX_CONFIG = Path(__file__).resolve().parent / "mediamtx.yml"
 
 
 def _url_host(host: str) -> str:
@@ -58,7 +60,7 @@ class Server:
         self._stop_reader()
         session = self.sessions.start()
         log.info("created session %s", session.id)
-        # self.services.start_session(session.id)
+        self.services.start_session(session.id)
         try:
             self.media.add_path(session.id)
         except MediaServerError as exc:
@@ -84,7 +86,9 @@ class Server:
         if session is None:
             return {"ok": False, "error": "no active session"}
         self._stop_reader()
-        # self.services.stop_session()
+        pcm_to_mp3(session.audio_dir / "audio.pcm", session.audio_dir / "audio.mp3")
+        ts_to_mp4(session.video_dir / "video.ts", session.video_dir / "video.mp4")
+        self.services.stop_session()
         try:
             self.media.delete_path(session.id)
         except MediaServerError as exc:
@@ -111,9 +115,9 @@ class Server:
         if self.media_server is not None and self.media_server.poll() is None:
             return
         binary = MEDIAMTX_DIR / "mediamtx"
-        # Run from its own folder so it picks up the mediamtx.yml next to it.
+        # Use the server's own mediamtx.yml, not the default one from the release.
         self.media_server = subprocess.Popen(
-            [str(binary.resolve())],
+            [str(binary.resolve()), str(MEDIAMTX_CONFIG)],
             cwd=binary.parent,
             env={**os.environ},
         )
@@ -141,13 +145,13 @@ class Server:
 
     def start(self) -> None:
         self.init_media_server()
-        # self.services.start()
+        self.services.start()
         self.streamer.start()
 
     def stop(self) -> None:
         self.streamer.close()
         self._stop_reader()
-        # self.services.stop()
+        self.services.stop()
         self.sessions.stop()
         self._stop_media_server()
 
