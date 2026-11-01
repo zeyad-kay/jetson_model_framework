@@ -5,10 +5,11 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from common.io import pcm_to_mp3, ts_to_mp4
 from server.config import Config
-from server.media import AudioReader, MediaServerClient, MediaServerError, VideoReader, pcm_to_mp3, ts_to_mp4
+from server.media import AudioListener, MediaServerClient, MediaServerError, VideoListener
 from server.log import get_logger, setup_logging
-from server.services import ServiceManager
+from server.services import WorkerServiceManager
 from server.sessions import SessionManager
 from server.streaming import StreamingServer
 
@@ -31,7 +32,7 @@ class Server:
 
     def __init__(self, config: Config):
         self.sessions = SessionManager(config.sessions_dir)
-        self.services = ServiceManager(
+        self.services = WorkerServiceManager(
             config.services, config.ping_timeout, config.ping_interval, config.monitor
         )
         self.streamer = StreamingServer(
@@ -41,8 +42,8 @@ class Server:
         self.media = MediaServerClient(config.media_api_url)
         self.media_rtsp_url = config.media_rtsp_url.rstrip("/")
         self.media_port = urlsplit(config.media_rtsp_url).port or 8554
-        self.audio_reader: AudioReader | None = None
-        self.video_reader: VideoReader | None = None
+        self.audio_listener: AudioListener | None = None
+        self.video_listener: VideoListener | None = None
         self.media_server: subprocess.Popen | None = None
         self.commands = {
             "start_session": (
@@ -57,7 +58,7 @@ class Server:
         }
 
     def start_session(self, message: dict, local_host: str) -> dict:
-        self._stop_reader()
+        self._stop_listeners()
         session = self.sessions.start()
         log.info("created session %s", session.id)
         self.services.start_session(session.id)
@@ -66,14 +67,14 @@ class Server:
         except MediaServerError as exc:
             log.warning("could not create media path %s: %s", session.id, exc)
         stream_url = f"{self.media_rtsp_url}/{session.id}"
-        self.audio_reader = AudioReader(
+        self.audio_listener = AudioListener(
             stream_url, self.media, session.id, session.audio_dir / "audio.pcm"
         )
-        self.audio_reader.start()
-        self.video_reader = VideoReader(
+        self.audio_listener.start()
+        self.video_listener = VideoListener(
             stream_url, self.media, session.id, session.video_dir / "video.ts"
         )
-        self.video_reader.start()
+        self.video_listener.start()
         return {
             "ok": True,
             "session_id": session.id,
@@ -85,9 +86,9 @@ class Server:
         session = self.sessions.session
         if session is None:
             return {"ok": False, "error": "no active session"}
-        self._stop_reader()
-        pcm_to_mp3(session.audio_dir / "audio.pcm", session.audio_dir / "audio.mp3")
-        ts_to_mp4(session.video_dir / "video.ts", session.video_dir / "video.mp4")
+        self._stop_listeners()
+        pcm_to_mp3(session.audio_dir / "audio.pcm", session.audio_dir / "audio.mp3", log)
+        ts_to_mp4(session.video_dir / "video.ts", session.video_dir / "video.mp4", log)
         self.services.stop_session()
         try:
             self.media.delete_path(session.id)
@@ -115,6 +116,8 @@ class Server:
         if self.media_server is not None and self.media_server.poll() is None:
             return
         binary = MEDIAMTX_DIR / "mediamtx"
+        # MediaMTX appends to its log file; start each run with a fresh one.
+        (binary.parent / "mediamtx.log").unlink(missing_ok=True)
         # Use the server's own mediamtx.yml, not the default one from the release.
         self.media_server = subprocess.Popen(
             [str(binary.resolve()), str(MEDIAMTX_CONFIG)],
@@ -123,16 +126,16 @@ class Server:
         )
         log.info("started media server (pid %d)", self.media_server.pid)
 
-    def _stop_reader(self) -> None:
-        if self.audio_reader is not None:
-            self.audio_reader.stop()
-            self.audio_reader = None
-        if self.video_reader is not None:
-            self.video_reader.stop()
-            self.video_reader = None
+    def _stop_listeners(self) -> None:
+        if self.audio_listener is not None:
+            self.audio_listener.stop()
+            self.audio_listener = None
+        if self.video_listener is not None:
+            self.video_listener.stop()
+            self.video_listener = None
 
     def _stop_media_server(self) -> None:
-        self._stop_reader()
+        self._stop_listeners()
         if self.media_server is None:
             return
         self.media_server.terminate()
@@ -150,7 +153,7 @@ class Server:
 
     def stop(self) -> None:
         self.streamer.close()
-        self._stop_reader()
+        self._stop_listeners()
         self.services.stop()
         self.sessions.stop()
         self._stop_media_server()

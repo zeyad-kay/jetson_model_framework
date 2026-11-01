@@ -1,20 +1,24 @@
 import queue
 import threading
+import time
 from pathlib import Path
 
 from asr_service.config import Config
-from asr_service.io import AudioReader, TranscriptWriter
+from common.service import WorkerService
+from common.io import TimedTranscriptWriter, TranscriptWriter
 from asr_service.log import get_logger
-from asr_service.model import ASRModel
+from asr_service.model import Nemotron
+from asr_service.segments import SegmentTracker
 
 log = get_logger(__name__)
 
 
-class ASRService:
+class ASRService(WorkerService):
     """Transcribes each session's audio as it is recorded.
 
     Idles until start() names a session, then reads <session>/audio/audio.pcm,
-    transcribes it and writes <session>/transcript/transcript.txt until the
+    transcribes it and writes <session>/transcript/transcript.txt (plus timestamped
+    transcript.jsonl) until the
     session ends (stop(), or start() of the next session). shutdown() ends the
     current session and makes run() return.
     """
@@ -25,7 +29,6 @@ class ASRService:
         self._end_session = threading.Event()
         self._shutdown = threading.Event()
         self._model = None
-        self._writer = None
 
     def start(self, session_id: str) -> None:
         """Queues a session; any session in progress is finished first.
@@ -54,7 +57,8 @@ class ASRService:
 
     def run(self) -> None:
         cfg = self.config
-        self._model = ASRModel(sampling_rate=cfg.sampling_rate)
+        # audio.pcm is raw PCM, so there is no WAV header to skip.
+        self._model = Nemotron(sampling_rate=cfg.sampling_rate, header_bytes=0)
         log.info(
             "model ready: %s (%d Hz, %s)",
             type(self._model).__name__,
@@ -71,44 +75,54 @@ class ASRService:
             log.info("waiting for a session")
 
     def _run_session(self, session_id: str) -> None:
-        cfg = self.config
         session_dir = self._session_dir(session_id)
+        audio_path = session_dir / "audio" / "audio.pcm"
         log.info("session %s started", session_id)
-        with (
-            AudioReader(
-                session_dir / "audio" / "audio.pcm",
-                sampling_rate=self._model.sampling_rate,
-                chunk_seconds=cfg.chunk_seconds,
-            ) as reader,
-            TranscriptWriter(session_dir / "transcript" / "transcript.txt") as self._writer,
-        ):
-            log.info(
-                "reading %s in %.1fs chunks (%d bytes), writing %s",
-                reader.path,
-                cfg.chunk_seconds,
-                reader.chunk_size,
-                self._writer.path,
+        # Nemotron emits text fragments (tokens), so no separator between writes.
+        transcript_dir = session_dir / "transcript"
+        tracker = SegmentTracker(
+            transcript_dir / "segments.json", self.config.segment_pause, self._model.chunk_seconds
+        )
+        with TranscriptWriter(transcript_dir / "transcript.txt", separator="") as writer, \
+                TimedTranscriptWriter(transcript_dir / "transcript.jsonl") as timed_writer:
+            log.info("transcribing %s, writing %s and %s", audio_path, writer.path, timed_writer.path)
+            worker = threading.Thread(
+                target=self._transcribe, args=(audio_path, writer, timed_writer, tracker), daemon=True
             )
-            self._read_loop(reader)
-        log.info("session %s finished", session_id)
+            worker.start()
+            self._end_session.wait()
+            # Let the model drain the audio it has not decoded yet. finish() is a
+            # no-op if transcribe() hasn't started yet, so repeat it until the
+            # worker exits; fall back to stop() if draining takes too long.
+            deadline = time.monotonic() + self.config.drain_timeout
+            while worker.is_alive():
+                if time.monotonic() < deadline:
+                    self._model.finish()
+                else:
+                    log.warning("draining timed out, stopping transcription")
+                    self._model.stop()
+                worker.join(timeout=0.5)
+        tracker.close()
+        log.info("session %s finished, %d segments", session_id, len(tracker))
 
-    def _read_loop(self, reader: AudioReader) -> None:
-        while True:
-            # Check the flag before reading so audio written before the end
-            # signal is never missed.
-            ending = self._end_session.is_set()
-            chunk = reader.read_chunk()
-            if chunk is not None:
-                self._process(chunk)
-                continue
-            if ending:
-                break
-            self._end_session.wait(self.config.poll_interval)
-        # Session ended and all full chunks are consumed: flush the tail.
-        tail = reader.read_remaining()
-        if tail:
-            self._process(tail)
-
-    def _process(self, audio: bytes) -> None:
-        log.debug("processing %d bytes of audio", len(audio))
-        # TODO: transcribe `audio` with self._model and write the text to self._writer
+    def _transcribe(
+        self,
+        audio_path: Path,
+        writer: TranscriptWriter,
+        timed_writer: TimedTranscriptWriter,
+        tracker: SegmentTracker,
+    ) -> None:
+        try:
+            # The recorder creates the file shortly after the session starts.
+            while not audio_path.exists():
+                if self._end_session.wait(self.config.poll_interval):
+                    return
+            for text, seconds in self._model.transcribe(str(audio_path)):
+                if text:
+                    log.debug("transcribed at %.2fs: %r", seconds, text)
+                    writer.write(text)
+                    timed_writer.write(text, seconds)
+                    tracker.add(text, seconds)
+                tracker.tick(seconds)
+        except Exception:
+            log.exception("transcription failed for %s", audio_path)

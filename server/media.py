@@ -54,7 +54,7 @@ class MediaServerClient:
             self._request("GET", "paths/list")
             return True
         except MediaServerError as exc:
-            log.debug("media server not reachable: %s", exc)
+            log.info("media server not reachable: %s", exc)
             return False
 
     def add_path(self, name: str, **config) -> None:
@@ -89,7 +89,7 @@ class MediaServerClient:
         self._request("POST", f"{kind}/kick/{quote(connection_id, safe='')}")
 
 
-class _FfmpegReader:
+class _FfmpegListener:
     """Base for running ffmpeg against a MediaMTX stream and writing straight to disk.
 
     ffmpeg owns the write to disk entirely (Python never touches the decoded
@@ -97,8 +97,10 @@ class _FfmpegReader:
     so this polls the Control API's `is_streaming` until a publisher is
     actually live before launching ffmpeg - avoiding ffmpeg's own
     failed-connect/retry churn (a full process spawned just to hit a 404).
-    There's no retry after that: a mid-session disconnect is assumed not to
-    happen, so ffmpeg runs once for the life of the reader.
+    If the publisher drops (ffmpeg exits) and the listener hasn't been stopped,
+    it waits for a publisher to come back and launches ffmpeg again. ffmpeg
+    writes to its stdout, which is the output file opened in append mode, so
+    each run continues the file instead of overwriting it.
 
     stop() always ends ffmpeg with a hard terminate (no graceful shutdown to
     wait on), so subclasses must pass `-flush_packets 1` in their command:
@@ -106,8 +108,18 @@ class _FfmpegReader:
     before anything is ever written, leaving an empty file.
     """
 
-    def __init__(self, url: str, media: "MediaServerClient", path: str, poll_interval: float = 0.1):
+    def __init__(
+        self,
+        url: str,
+        media: "MediaServerClient",
+        path: str,
+        output_path: Union[str, Path],
+        poll_interval: float = 0.1,
+        retry_delay: float = 0.1,
+    ):
         self.url = url
+        self.output_path = Path(output_path)
+        self._retry_delay = retry_delay
         self._media = media
         self._path = path
         self._poll_interval = poll_interval
@@ -117,7 +129,7 @@ class _FfmpegReader:
         self._thread: Optional[threading.Thread] = None
 
     def _build_cmd(self) -> list[str]:
-        """The ffmpeg command to run. Subclasses fill in the output options."""
+        """The ffmpeg command to run, writing to pipe:1. Subclasses fill in the output options."""
         raise NotImplementedError
 
     def start(self) -> None:
@@ -134,18 +146,42 @@ class _FfmpegReader:
             self._thread = None
 
     def _run(self) -> None:
-        while not self._stopped.is_set() and not self._media.is_streaming(self._path):
+        first = True
+        while not self._stopped.is_set():
+            if not self._wait_for_publisher():
+                return
+            if not first:
+                log.info("publisher is back on %s, resuming recording", self._path)
+            first = False
+            self._run_ffmpeg()
+            if self._stopped.is_set():
+                return
+            log.warning("lost the stream on %s, waiting for the publisher to reconnect", self._path)
+            # Right after a drop MediaMTX may still report the dead publisher
+            # as ready; the pause keeps a stale path from causing a respawn loop.
+            self._stopped.wait(self._retry_delay)
+
+    def _wait_for_publisher(self) -> bool:
+        """Blocks until a publisher is live. False if the listener was stopped first."""
+        while not self._stopped.is_set():
+            try:
+                if self._media.is_streaming(self._path):
+                    return True
+            except MediaServerError as exc:
+                log.info("media server not reachable: %s", exc)
             self._stopped.wait(self._poll_interval)
-        if self._stopped.is_set():
-            return
-        self._proc = subprocess.Popen(
-            self._build_cmd(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        log.debug("ffmpeg reading %s (pid %d)", self.url, self._proc.pid)
-        if self._stopped.is_set():  # stop() ran before _proc was set
-            self._proc.terminate()
-        threading.Thread(target=self._log_errors, args=(self._proc,), daemon=True).start()
-        self._proc.wait()
+        return False
+
+    def _run_ffmpeg(self) -> None:
+        with open(self.output_path, "ab") as out:
+            proc = self._proc = subprocess.Popen(
+                self._build_cmd(), stdout=out, stderr=subprocess.PIPE
+            )
+            log.info("ffmpeg reading %s (pid %d)", self.url, proc.pid)
+            if self._stopped.is_set():  # stop() ran before _proc was set
+                proc.terminate()
+            threading.Thread(target=self._log_errors, args=(proc,), daemon=True).start()
+            proc.wait()
 
     def _log_errors(self, proc: subprocess.Popen) -> None:
         """Logs ffmpeg's stderr. A repeat of the last error (e.g. while waiting
@@ -159,7 +195,7 @@ class _FfmpegReader:
                 log.warning("ffmpeg (%s): %s", self.url, line)
 
 
-class AudioReader(_FfmpegReader):
+class AudioListener(_FfmpegListener):
     """Reads a MediaMTX stream's audio, decoded to raw 16-bit mono PCM, into `output_path`."""
 
     def __init__(
@@ -170,8 +206,7 @@ class AudioReader(_FfmpegReader):
         output_path: Union[str, Path],
         sample_rate: int = 16000,
     ):
-        super().__init__(url, media, path)
-        self.output_path = Path(output_path)
+        super().__init__(url, media, path, output_path)
         self._sample_rate = sample_rate
 
     def _build_cmd(self) -> list[str]:
@@ -181,58 +216,19 @@ class AudioReader(_FfmpegReader):
             "-i", self.url,
             "-vn", "-f", "s16le", "-ac", "1", "-ar", str(self._sample_rate),
             "-flush_packets", "1",
-            str(self.output_path),
+            "pipe:1",
         ]
 
 
-def pcm_to_mp3(pcm_path: Union[str, Path], mp3_path: Union[str, Path], sample_rate: int = 16000) -> bool:
-    """Converts raw 16-bit mono PCM (as written by AudioReader) to an mp3. True on success."""
-    pcm_path = Path(pcm_path)
-    if not pcm_path.exists() or pcm_path.stat().st_size == 0:
-        log.warning("no audio to convert at %s", pcm_path)
-        return False
-    result = subprocess.run(
-        [
-            "ffmpeg", "-loglevel", "error", "-y",
-            "-f", "s16le", "-ac", "1", "-ar", str(sample_rate),
-            "-i", str(pcm_path), str(mp3_path),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        log.warning("pcm to mp3 failed: %s", result.stderr.decode(errors="replace").strip())
-        return False
-    return True
-
-
-def ts_to_mp4(ts_path: Union[str, Path], mp4_path: Union[str, Path]) -> bool:
-    """Converts raw mpeg-ts to an mp4. True on success."""
-    ts_path = Path(ts_path)
-    if not ts_path.exists() or ts_path.stat().st_size == 0:
-        log.warning("no audio to convert at %s", ts_path)
-        return False
-    result = subprocess.run(
-        [
-            "ffmpeg", "-loglevel", "error", "-y",
-            "-i", str(ts_path), str(mp4_path),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        log.warning("ts to mp4 failed: %s", result.stderr.decode(errors="replace").strip())
-        return False
-    return True
-
-class VideoReader(_FfmpegReader):
+class VideoListener(_FfmpegListener):
     """Reads a MediaMTX stream's video into `output_path`, copying the encoded
     packets as-is (no decoding/re-encoding).
 
     MPEG-TS is used as the container regardless of `output_path`'s extension,
     since it needs no trailer/index to be valid, unlike e.g. MP4 - so a file
     terminated mid-stream (publisher drop, reconnect, session stop) is still
-    playable up to the point it was cut off.
+    playable up to the point it was cut off, and a reconnect can just append
+    another run to it.
     """
 
     def __init__(
@@ -242,8 +238,7 @@ class VideoReader(_FfmpegReader):
         path: str,
         output_path: Union[str, Path],
     ):
-        super().__init__(url, media, path)
-        self.output_path = Path(output_path)
+        super().__init__(url, media, path, output_path)
 
     def _build_cmd(self) -> list[str]:
         return [
@@ -251,7 +246,5 @@ class VideoReader(_FfmpegReader):
             "-rtsp_transport", "tcp",
             "-i", self.url,
             "-an", "-c:v", "copy", "-flush_packets", "1", "-f", "mpegts",
-            str(self.output_path),
+            "pipe:1",
         ]
-
-# ffmpeg -rtsp_transport tcp -i rtsp://<hotspot_ip>:8554/<session_id> -c:v libx265 -crf 28 -c:a copy -movflags frag_keyframe+empty_moof+default_base_moof output.mp4

@@ -6,6 +6,9 @@ services:
     # depends_on:
     #   asr_service:
     #     condition: service_healthy
+    environment:
+      # Must be the shared volume, or the other services can't find the session folders.
+      SERVER_SESSIONS_DIR: /sessions
     volumes:
       - ./sessions:/sessions
       - ./run:/run/bridge
@@ -26,6 +29,9 @@ services:
       ASR_SAMPLING_RATE: "16000"
       ASR_CHUNK_SECONDS: "1.0"
       ASR_LOG_LEVEL: INFO
+      # Torch's pip cuDNN (9.20) mixes with the host-injected one (9.21) and fails with
+      # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
+      LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     # healthcheck:
       # Healthy once the bridge answers a ping with a pong (socket = ASR_BRIDGE_PATH).
       # test:

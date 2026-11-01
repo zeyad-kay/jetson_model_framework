@@ -3,11 +3,18 @@ MediaMTX over RTSP in real time, then stops the session and checks the result.
 
     python mock_client.py --host 192.168.4.1
     python mock_client.py --sessions-dir ./sessions --api-url http://10.79.128.41:9997
+    python mock_client.py --sessions-dir ./sessions --drops 2 --drop-interval 10 --drop-seconds 5
 
 The checks on the session folder and the recorded audio need --sessions-dir
 (the server's sessions volume as seen from here). The check on the MediaMTX
 path needs --api-url (its Control API only listens on localhost). Without
 them those checks are skipped. Exits non-zero if any check fails.
+
+--drops N simulates N network drops: every --drop-interval seconds the
+publisher is killed without a clean shutdown, stays offline for --drop-seconds,
+then reconnects to the same URL. Like a live camera and mic, the source keeps
+running while offline, so the audio from the outage is lost and the recording
+should be shorter by about --drop-seconds per drop.
 """
 
 import argparse
@@ -20,7 +27,9 @@ import urllib.request
 from pathlib import Path
 
 SESSION_SUBDIRS = ("audio", "transcript", "video", "structured")
-SAMPLE_RATE = 16000  # the server's reader writes 16 kHz, 16-bit mono PCM
+SAMPLE_RATE = 16000  # the server's audio listener writes 16 kHz, 16-bit mono PCM
+BYTES_PER_SECOND = SAMPLE_RATE * 2
+RECONNECT_SLACK = 3.0  # extra seconds the server may take to notice a reconnect, per drop
 AUDIO_TOLERANCE = 0.10  # recorded length may differ from the input's by this much
 
 results: list[tuple[str, bool]] = []
@@ -73,7 +82,7 @@ def reference_pcm(audio_file: str) -> bytes:
 
 
 def wait_until_size_settles(path: Path, quiet: float = 1.0, timeout: float = 10.0) -> None:
-    """Waits until the file stops growing, so the server's reader has drained."""
+    """Waits until the file stops growing, so the server's listener has drained."""
     deadline = time.monotonic() + timeout
     last, since = -1, time.monotonic()
     while time.monotonic() < deadline:
@@ -94,6 +103,11 @@ def main() -> None:
     parser.add_argument("--audio-file", default=str(Path(__file__).parent / "obama_16k.mp3"),
                          help="audio source muxed in alongside the video")
     parser.add_argument("--sessions-dir", help="the server's sessions folder, as seen from here")
+    parser.add_argument("--drops", type=int, default=0, help="number of network drops to simulate")
+    parser.add_argument("--drop-interval", type=float, default=10.0,
+                         help="seconds of publishing before each drop")
+    parser.add_argument("--drop-seconds", type=float, default=5.0,
+                         help="seconds the publisher stays offline per drop")
     args = parser.parse_args()
 
     sessions_dir = Path(args.sessions_dir) if args.sessions_dir else None
@@ -130,20 +144,47 @@ def main() -> None:
         #
         # Video is re-encoded to H.264 (not stream-copied) with a short, fixed
         # keyframe interval (-g, one per second at 30fps) rather than whatever
-        # GOP structure the source file happens to have - VideoReader's -c:v
+        # GOP structure the source file happens to have - VideoListener's -c:v
         # copy on the server side can only start recording from a keyframe, so
         # a short source GOP matters more here than for a casual test file.
-        publisher = subprocess.Popen([
-            "ffmpeg", "-re", "-i", args.video_file,
-            "-re", "-i", args.audio_file,
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "veryfast", "-bf", "0",
-            "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
-            "-c:a", "aac",
-            "-f", "rtsp", url,
-        ])
+        def start_publisher(offset: float) -> subprocess.Popen:
+            # -ss before each -i seeks both files to where a live source would be.
+            return subprocess.Popen([
+                "ffmpeg", "-ss", str(offset), "-re", "-i", args.video_file,
+                "-ss", str(offset), "-re", "-i", args.audio_file,
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "libx264", "-preset", "veryfast", "-bf", "0",
+                "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+                "-c:a", "aac",
+                "-f", "rtsp", url,
+            ])
+
+        drops_done = 0
+        sizes_at_reconnect = []
+        offset = 0.0
+        publisher = start_publisher(offset)
         try:
-            check("publisher finished cleanly", publisher.wait() == 0, f"exit code {publisher.returncode}")
+            while True:
+                if drops_done < args.drops:
+                    try:
+                        publisher.wait(timeout=args.drop_interval)
+                    except subprocess.TimeoutExpired:
+                        drops_done += 1
+                        print(f"network drop {drops_done}/{args.drops}: offline for {args.drop_seconds}s")
+                        publisher.kill()  # no clean RTSP teardown, like a lost connection
+                        publisher.wait()
+                        time.sleep(args.drop_seconds)
+                        offset += args.drop_interval + args.drop_seconds
+                        sizes_at_reconnect.append(audio.stat().st_size if audio and audio.exists() else 0)
+                        print(f"reconnecting, resuming the source at {offset}s")
+                        publisher = start_publisher(offset)
+                        continue
+                else:
+                    publisher.wait()
+                break
+            check("simulated every network drop", drops_done == args.drops,
+                  f"{drops_done}/{args.drops}; the input ended too soon" if drops_done != args.drops else "")
+            check("publisher finished cleanly", publisher.returncode == 0, f"exit code {publisher.returncode}")
         except KeyboardInterrupt:
             print("interrupted")
             publisher.terminate()
@@ -159,9 +200,17 @@ def main() -> None:
 
     if audio:
         size = audio.stat().st_size if audio.exists() else 0
-        low, high = len(expected) * (1 - AUDIO_TOLERANCE), len(expected) * (1 + AUDIO_TOLERANCE)
+        # Each drop loses the outage's audio, plus a little while the server notices the reconnect.
+        target = len(expected) - drops_done * args.drop_seconds * BYTES_PER_SECOND
+        low = target * (1 - AUDIO_TOLERANCE) - drops_done * RECONNECT_SLACK * BYTES_PER_SECOND
+        high = target * (1 + AUDIO_TOLERANCE)
         check("recorded audio length matches the input", low <= size <= high,
-              f"{size} bytes, expected {len(expected)} ±{AUDIO_TOLERANCE:.0%}")
+              f"{size} bytes, expected {int(target)} ±{AUDIO_TOLERANCE:.0%}"
+              + (f" after {drops_done} drops" if drops_done else ""))
+        if sizes_at_reconnect:
+            # Bytes written before the reconnect can't include audio from after it.
+            check("recording resumed after the last drop", size > sizes_at_reconnect[-1],
+                  f"{sizes_at_reconnect[-1]} -> {size} bytes")
 
     if video:
         size = video.stat().st_size if video.exists() else 0

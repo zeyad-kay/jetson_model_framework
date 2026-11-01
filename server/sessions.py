@@ -35,7 +35,7 @@ class SessionManager:
 
     Sessions live at <sessions_dir>/<random_8_char_id>/ with audio, transcript,
     video and structured subdirectories. The audio and video files are written
-    directly by ffmpeg (see AudioReader and VideoReader), not by this class.
+    directly by ffmpeg (see AudioListener and VideoListener), not by this class.
     Starting a session closes the previous one. Not thread-safe.
     """
 

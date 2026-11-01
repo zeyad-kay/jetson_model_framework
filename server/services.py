@@ -1,16 +1,15 @@
-import json
-import socket
 import threading
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Optional, Union
 
+from common.bridge import BridgeClient
 from server.log import get_logger
 
 log = get_logger(__name__)
 
 
-class Service:
+class WorkerServiceClient:
     """A handle on one other service, reached through its bridge socket.
 
     The name is the socket file's stem (asr_service.sock -> "asr_service").
@@ -20,17 +19,13 @@ class Service:
     def __init__(self, path: Union[str, Path], timeout: float):
         self.path = Path(path)
         self.name = self.path.stem
-        self.timeout = timeout
+        self._client = BridgeClient(self.path, timeout)
         self.up: Optional[bool] = None
 
     def send(self, message: dict) -> Optional[dict]:
         """Sends one JSON message and returns the reply, or None on failure."""
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(self.timeout)
-                sock.connect(str(self.path))
-                sock.sendall(json.dumps(message).encode() + b"\n")
-                return json.loads(sock.makefile("rb").readline())
+            return self._client.send(message)
         except (OSError, ValueError) as exc:
             log.debug("message to %s failed: %s", self.name, exc)
             return None
@@ -67,8 +62,8 @@ class Service:
         return up
 
 
-class ServiceManager:
-    """Owns every Service: starting and stopping them together and monitoring their health.
+class WorkerServiceManager:
+    """Owns every WorkerServiceClient: starting and stopping them together and monitoring their health.
 
     If monitor is True, start_services also starts pinging every service in the
     background and stop_services stops it.
@@ -81,9 +76,9 @@ class ServiceManager:
         ping_interval: float,
         monitor: bool = True,
     ):
-        self._services: dict[str, Service] = {}
+        self._services: dict[str, WorkerServiceClient] = {}
         for path in paths:
-            service = Service(path, timeout)
+            service = WorkerServiceClient(path, timeout)
             if service.name in self._services:
                 log.warning("ignoring %s: a service named %r already exists", path, service.name)
                 continue
@@ -93,10 +88,10 @@ class ServiceManager:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    def __getitem__(self, name: str) -> Service:
+    def __getitem__(self, name: str) -> WorkerServiceClient:
         return self._services[name]
 
-    def __iter__(self) -> Iterator[Service]:
+    def __iter__(self) -> Iterator[WorkerServiceClient]:
         return iter(self._services.values())
 
     def status(self) -> dict[str, Optional[bool]]:
