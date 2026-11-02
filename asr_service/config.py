@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-from common.config import env_getter
+from common.config import env_getter, shared_paths
 
 
 
@@ -12,7 +12,12 @@ class Config:
     sessions_dir: str = "/sessions"
     bridge_path: str = "/run/bridge/asr_service.sock"
     sampling_rate: int = 16000
-    chunk_seconds: float = 1.0
+    # Transcription language passed to the model.
+    language: str = "en-US"
+    # Seconds the model stays behind the writer so it only reads flushed audio.
+    delay: int = 2
+    # Lookahead tokens of the streaming model (higher = more accurate, more latency).
+    num_lookahead_tokens: int = 6
     poll_interval: float = 0.05
     # Max seconds to keep transcribing after a session ends before cutting off.
     drain_timeout: float = 30.0
@@ -25,21 +30,20 @@ class Config:
     def load(cls, env_file: Optional[Union[str, Path]] = None) -> "Config":
         """Loads settings from a .env file, overridden by real environment variables.
 
-        The file is `env_file`, else $ASR_ENV_FILE, else ./.env. A missing
-        file is fine (defaults and the environment are used). Every setting
-        is an ASR_-prefixed upper-case variable, e.g. ASR_BRIDGE_PATH.
+        The file is `env_file`, else $ENV_FILE, else ./.env. A missing
+        file is fine (defaults and the environment are used). The directories (SESSIONS_DIR, LOGS_DIR, BRIDGE_DIR), LOG_LEVEL
+        and SAMPLING_RATE are shared; the rest are ASR_-prefixed.
         """
-        get = env_getter("ASR_", env_file)
+        get = env_getter(env_file)
         defaults = cls()
 
         return cls(
-            sessions_dir=get("sessions_dir", str, defaults.sessions_dir),
-            bridge_path=get("bridge_path", str, defaults.bridge_path),
-            sampling_rate=get("sampling_rate", int, defaults.sampling_rate),
-            chunk_seconds=get("chunk_seconds", float, defaults.chunk_seconds),
-            poll_interval=get("poll_interval", float, defaults.poll_interval),
-            drain_timeout=get("drain_timeout", float, defaults.drain_timeout),
-            segment_pause=get("segment_pause", float, defaults.segment_pause),
-            log_level=get("log_level", str, defaults.log_level),
-            log_file=get("log_file", str, defaults.log_file),
+            **shared_paths(get, "asr_service", "asr", defaults),
+            sampling_rate=get("SAMPLING_RATE", int, defaults.sampling_rate),
+            language=get("ASR_LANGUAGE", str, defaults.language),
+            delay=get("ASR_DELAY", int, defaults.delay),
+            num_lookahead_tokens=get("ASR_NUM_LOOKAHEAD_TOKENS", int, defaults.num_lookahead_tokens),
+            poll_interval=get("ASR_POLL_INTERVAL", float, defaults.poll_interval),
+            drain_timeout=get("ASR_DRAIN_TIMEOUT", float, defaults.drain_timeout),
+            segment_pause=get("ASR_SEGMENT_PAUSE", float, defaults.segment_pause),
         )

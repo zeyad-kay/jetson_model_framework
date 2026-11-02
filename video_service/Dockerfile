@@ -9,4 +9,9 @@ WORKDIR /app
 COPY common/ common/
 COPY video_service/ video_service/
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install transformers accelerate av
+
 CMD ["python", "-m", "video_service.main"]

@@ -6,9 +6,9 @@ from common import log as _log
 ROOT_NAME = "llm_service"
 
 
-def setup_logging(level: Union[int, str] = "INFO") -> None:
+def setup_logging(level: Union[int, str] = "INFO", log_file: Optional[Union[str, Path]] = None) -> None:
     """Configures the llm_service logger. Call once at startup."""
-    _log.setup_logging(ROOT_NAME, level)
+    _log.setup_logging(ROOT_NAME, level, log_file, also_stderr=True)
 
 
 def get_logger(name: str):

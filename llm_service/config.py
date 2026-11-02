@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-from common.config import env_getter
+from common.config import env_getter, shared_paths
 
 
 @dataclass(frozen=True)
@@ -11,18 +11,17 @@ class Config:
     sessions_dir: str = "/sessions"
     bridge_path: str = "/run/bridge/llm_service.sock"
     log_level: str = "INFO"
+    log_file: Optional[str] = None
 
     @classmethod
     def load(cls, env_file: Optional[Union[str, Path]] = None) -> "Config":
         """Loads settings from a .env file, overridden by real environment variables.
 
-        The file is `env_file`, else $LLM_ENV_FILE, else ./.env. Every setting
-        is a LLM_-prefixed upper-case variable, e.g. LLM_BRIDGE_PATH.
+        The file is `env_file`, else $ENV_FILE, else ./.env. The directories (SESSIONS_DIR, LOGS_DIR, BRIDGE_DIR), LOG_LEVEL
+        and SAMPLING_RATE are shared; the rest are LLM_-prefixed.
         """
-        get = env_getter("LLM_", env_file)
+        get = env_getter(env_file)
         defaults = cls()
         return cls(
-            sessions_dir=get("sessions_dir", str, defaults.sessions_dir),
-            bridge_path=get("bridge_path", str, defaults.bridge_path),
-            log_level=get("log_level", str, defaults.log_level),
+            **shared_paths(get, "llm_service", "llm", defaults),
         )

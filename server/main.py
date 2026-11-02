@@ -41,6 +41,7 @@ class Server:
         # Every command we accept from the client: name -> (description, handler).
         self.media = MediaServerClient(config.media_api_url)
         self.media_rtsp_url = config.media_rtsp_url.rstrip("/")
+        self.sampling_rate = config.sampling_rate
         self.media_port = urlsplit(config.media_rtsp_url).port or 8554
         self.audio_listener: AudioListener | None = None
         self.video_listener: VideoListener | None = None
@@ -68,7 +69,8 @@ class Server:
             log.warning("could not create media path %s: %s", session.id, exc)
         stream_url = f"{self.media_rtsp_url}/{session.id}"
         self.audio_listener = AudioListener(
-            stream_url, self.media, session.id, session.audio_dir / "audio.pcm"
+            stream_url, self.media, session.id, session.audio_dir / "audio.pcm",
+            sample_rate=self.sampling_rate,
         )
         self.audio_listener.start()
         self.video_listener = VideoListener(
@@ -87,7 +89,7 @@ class Server:
         if session is None:
             return {"ok": False, "error": "no active session"}
         self._stop_listeners()
-        pcm_to_mp3(session.audio_dir / "audio.pcm", session.audio_dir / "audio.mp3", log)
+        pcm_to_mp3(session.audio_dir / "audio.pcm", session.audio_dir / "audio.mp3", log, self.sampling_rate)
         ts_to_mp4(session.video_dir / "video.ts", session.video_dir / "video.mp4", log)
         self.services.stop_session()
         try:

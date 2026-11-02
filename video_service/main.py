@@ -8,7 +8,7 @@ log = get_logger(__name__)
 
 def main() -> None:
     config = Config.load()
-    setup_logging(level=config.log_level)
+    setup_logging(level=config.log_level, log_file=config.log_file)
     log.info("starting video_service")
     run_service(VideoService(config), config.bridge_path, log)
     log.info("video_service stopped")

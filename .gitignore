@@ -5,3 +5,4 @@ sessions
 run
 *.log
 mediamtx
+logs

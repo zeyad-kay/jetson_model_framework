@@ -58,7 +58,13 @@ class ASRService(WorkerService):
     def run(self) -> None:
         cfg = self.config
         # audio.pcm is raw PCM, so there is no WAV header to skip.
-        self._model = Nemotron(sampling_rate=cfg.sampling_rate, header_bytes=0)
+        self._model = Nemotron(
+            sampling_rate=cfg.sampling_rate,
+            language=cfg.language,
+            delay=cfg.delay,
+            num_lookahead_tokens=cfg.num_lookahead_tokens,
+            header_bytes=0,
+        )
         log.info(
             "model ready: %s (%d Hz, %s)",
             type(self._model).__name__,

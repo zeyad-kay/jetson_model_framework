@@ -3,15 +3,31 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+    env_file:
+      - path: .env
+        required: true
     # depends_on:
     #   asr_service:
     #     condition: service_healthy
-    environment:
-      # Must be the shared volume, or the other services can't find the session folders.
-      SERVER_SESSIONS_DIR: /sessions
     volumes:
-      - ./sessions:/sessions
-      - ./run:/run/bridge
+      - type: bind
+        source: ./sessions
+        target: ${SESSIONS_DIR:-/sessions}
+      - type: bind
+        source: ./logs
+        target: ${LOGS_DIR:-/logs}
+      - type: bind
+        source: ./run
+        target: ${BRIDGE_DIR:-/run/bridge}
+      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
+      - type: bind
+        source: ./common
+        target: /app/common
+        read_only: true
+      - type: bind
+        source: ./server
+        target: /app/server
+        read_only: true
     # Host networking so the server sees the address clients reach it at (the
     # hotspot's) and can hand back a publish URL that works. It listens on 8000
     # (control) and 8554 (RTSP).
@@ -24,16 +40,15 @@ services:
     restart: unless-stopped
     # SIGTERM makes the service finish the current session's remaining audio before exiting.
     stop_grace_period: 30s
+    env_file:
+      - path: .env
+        required: true
     environment:
-      ASR_BRIDGE_PATH: /run/bridge/asr_service.sock
-      ASR_SAMPLING_RATE: "16000"
-      ASR_CHUNK_SECONDS: "1.0"
-      ASR_LOG_LEVEL: INFO
       # Torch's pip cuDNN (9.20) mixes with the host-injected one (9.21) and fails with
       # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
       LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     # healthcheck:
-      # Healthy once the bridge answers a ping with a pong (socket = ASR_BRIDGE_PATH).
+      # Healthy once the bridge answers a ping with a pong (socket = $BRIDGE_DIR/asr_service.sock).
       # test:
       #   - CMD
       #   - python
@@ -44,23 +59,81 @@ services:
       # retries: 5
       # start_period: 10s
     volumes:
-      - ./sessions:/sessions
-      - ./run:/run/bridge
+      - type: bind
+        source: ./sessions
+        target: ${SESSIONS_DIR:-/sessions}
+      - type: bind
+        source: ./logs
+        target: ${LOGS_DIR:-/logs}
+      - type: bind
+        source: ./run
+        target: ${BRIDGE_DIR:-/run/bridge}
+      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
+      - type: bind
+        source: ./common
+        target: /app/common
+        read_only: true
+      - type: bind
+        source: ./asr_service
+        target: /app/asr_service
+        read_only: true
 
   llm_service:
     build:
       context: .
       dockerfile: llm_service/Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
     volumes:
-      - ./sessions:/sessions
-      - ./run:/run/bridge
+      - type: bind
+        source: ./sessions
+        target: ${SESSIONS_DIR:-/sessions}
+      - type: bind
+        source: ./logs
+        target: ${LOGS_DIR:-/logs}
+      - type: bind
+        source: ./run
+        target: ${BRIDGE_DIR:-/run/bridge}
+      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
+      - type: bind
+        source: ./common
+        target: /app/common
+        read_only: true
+      - type: bind
+        source: ./llm_service
+        target: /app/llm_service
+        read_only: true
 
   video_service:
     build:
       context: .
       dockerfile: video_service/Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # Torch's pip cuDNN (9.20) mixes with the host-injected one (9.21) and fails with
+      # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
+      LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
-      - ./sessions:/sessions
-      - ./run:/run/bridge
+      - type: bind
+        source: ./sessions
+        target: ${SESSIONS_DIR:-/sessions}
+      - type: bind
+        source: ./logs
+        target: ${LOGS_DIR:-/logs}
+      - type: bind
+        source: ./run
+        target: ${BRIDGE_DIR:-/run/bridge}
+      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
+      - type: bind
+        source: ./common
+        target: /app/common
+        read_only: true
+      - type: bind
+        source: ./video_service
+        target: /app/video_service
+        read_only: true
