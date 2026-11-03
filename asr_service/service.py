@@ -1,6 +1,5 @@
 import queue
 import threading
-import time
 from pathlib import Path
 
 from asr_service.config import Config
@@ -97,16 +96,11 @@ class ASRService(WorkerService):
             )
             worker.start()
             self._end_session.wait()
-            # Let the model drain the audio it has not decoded yet. finish() is a
-            # no-op if transcribe() hasn't started yet, so repeat it until the
-            # worker exits; fall back to stop() if draining takes too long.
-            deadline = time.monotonic() + self.config.drain_timeout
+            # Let the model decode all the audio it has not decoded yet, however
+            # long that takes. finish() is a no-op if transcribe() hasn't started
+            # yet, so repeat it until the worker exits.
             while worker.is_alive():
-                if time.monotonic() < deadline:
-                    self._model.finish()
-                else:
-                    log.warning("draining timed out, stopping transcription")
-                    self._model.stop()
+                self._model.finish()
                 worker.join(timeout=0.5)
         tracker.close()
         log.info("session %s finished, %d segments", session_id, len(tracker))

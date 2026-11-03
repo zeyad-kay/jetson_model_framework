@@ -1,7 +1,6 @@
 import queue
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 from common.service import WorkerService
@@ -80,16 +79,11 @@ class VideoService(WorkerService):
         worker = threading.Thread(target=self._segment, args=(video_path, output_path), daemon=True)
         worker.start()
         self._end_session.wait()
-        # Let the model drain the frames it has not processed yet. finish() is a
-        # no-op if segment() hasn't started yet, so repeat it until the worker
-        # exits; fall back to stop() if draining takes too long.
-        deadline = time.monotonic() + self.config.drain_timeout
+        # Let the model process all the frames it has not processed yet, however
+        # long that takes. finish() is a no-op if segment() hasn't started yet,
+        # so repeat it until the worker exits.
         while worker.is_alive():
-            if time.monotonic() < deadline:
-                self._model.finish()
-            else:
-                log.warning("draining timed out, stopping segmentation")
-                self._model.stop()
+            self._model.finish()
             worker.join(timeout=0.5)
         log.info("session %s finished", session_id)
 

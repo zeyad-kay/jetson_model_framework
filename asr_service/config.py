@@ -19,8 +19,6 @@ class Config:
     # Lookahead tokens of the streaming model (higher = more accurate, more latency).
     num_lookahead_tokens: int = 6
     poll_interval: float = 0.05
-    # Max seconds to keep transcribing after a session ends before cutting off.
-    drain_timeout: float = 30.0
     # A pause of at least this many seconds starts a new transcript segment.
     segment_pause: float = 20.0
     log_level: str = "INFO"
@@ -44,6 +42,5 @@ class Config:
             delay=get("ASR_DELAY", int, defaults.delay),
             num_lookahead_tokens=get("ASR_NUM_LOOKAHEAD_TOKENS", int, defaults.num_lookahead_tokens),
             poll_interval=get("ASR_POLL_INTERVAL", float, defaults.poll_interval),
-            drain_timeout=get("ASR_DRAIN_TIMEOUT", float, defaults.drain_timeout),
             segment_pause=get("ASR_SEGMENT_PAUSE", float, defaults.segment_pause),
         )

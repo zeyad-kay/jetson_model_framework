@@ -19,8 +19,6 @@ class Config:
     # Opacity of the mask overlay, 0-1.
     alpha: float = 0.5
     poll_interval: float = 0.05
-    # Max seconds to keep segmenting after a session ends before cutting off.
-    drain_timeout: float = 30.0
     log_level: str = "INFO"
     log_file: Optional[str] = None
 
@@ -40,5 +38,4 @@ class Config:
             probe_timeout=get("VIDEO_PROBE_TIMEOUT", float, defaults.probe_timeout),
             alpha=get("VIDEO_ALPHA", float, defaults.alpha),
             poll_interval=get("VIDEO_POLL_INTERVAL", float, defaults.poll_interval),
-            drain_timeout=get("VIDEO_DRAIN_TIMEOUT", float, defaults.drain_timeout),
         )

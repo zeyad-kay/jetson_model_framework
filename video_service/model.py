@@ -32,7 +32,7 @@ class _SingletonMeta(type):
 class VideoModel(metaclass=_SingletonMeta):
     """Blueprint for video segmentation models. Subclasses override segment."""
 
-    def __init__(self, prompt: str = "patient", pixel_format: str = "rgb24", idle_timeout: float = 10.0):
+    def __init__(self, prompt: str = "wound", pixel_format: str = "rgb24", idle_timeout: float = 10.0):
         self._prompt = prompt
         self._pixel_format = pixel_format
         self._idle_timeout = idle_timeout
@@ -83,7 +83,7 @@ class Sam3(VideoModel):
     def __init__(
         self,
         model_id: str = "facebook/sam3",
-        prompt: str = "bottle",
+        prompt: str = "wound",
         device: str = "cuda",
         dtype: str = "float16",  # ~2.7x faster than fp32; mean mask IoU vs fp32 0.998 (bf16: 0.975)
         idle_timeout: float = 10.0,
