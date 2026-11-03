@@ -1,12 +1,14 @@
 import json
+import os
 import re
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from server.log import get_logger
 
@@ -87,6 +89,82 @@ class MediaServerClient:
         if kind not in KICKABLE:
             raise ValueError(f"unknown connection kind: {kind!r}")
         self._request("POST", f"{kind}/kick/{quote(connection_id, safe='')}")
+
+
+def _url_host(host: str) -> str:
+    """Brackets an IPv6 address so it can go in a URL."""
+    return f"[{host}]" if ":" in host else host
+
+
+class MediaServer:
+    """Runs the MediaMTX binary as a child process and exposes its Control API as `client`."""
+
+    def __init__(
+        self,
+        api_url: str,
+        rtsp_url: str,
+        binary: Union[str, Path],
+        config: Union[str, Path],
+        ready_timeout: float = 10.0,
+    ):
+        self.client = MediaServerClient(api_url)
+        self._rtsp_url = rtsp_url.rstrip("/")
+        self._rtsp_port = urlsplit(rtsp_url).port or 8554
+        self._binary = Path(binary)
+        self._config = Path(config)
+        self._ready_timeout = ready_timeout
+        self._process: Optional[subprocess.Popen] = None
+
+    def read_url(self, session_id: str) -> str:
+        """Where this machine reads a session's stream from."""
+        return f"{self._rtsp_url}/{session_id}"
+
+    def publish_url(self, session_id: str, host: str) -> str:
+        """Where a remote client publishes a session's stream, given the address it reached us at."""
+        return f"rtsp://{_url_host(host)}:{self._rtsp_port}/{session_id}"
+
+    def start(self) -> None:
+        """Starts MediaMTX and waits until its API answers. A no-op if it is already running.
+
+        Logs a warning, rather than failing, if the API isn't up in time or the process exits.
+        """
+        if self._process is not None and self._process.poll() is None:
+            return
+        # MediaMTX appends to its log file; start each run with a fresh one.
+        (self._binary.parent / "mediamtx.log").unlink(missing_ok=True)
+        # Use the server's own mediamtx.yml, not the default one from the release.
+        self._process = subprocess.Popen(
+            [str(self._binary.resolve()), str(self._config)],
+            cwd=self._binary.parent,
+            env={**os.environ},
+        )
+        log.info("started media server (pid %d)", self._process.pid)
+        self._wait_until_ready()
+
+    def _wait_until_ready(self) -> None:
+        deadline = time.monotonic() + self._ready_timeout
+        while time.monotonic() < deadline:
+            if self._process.poll() is not None:
+                log.warning("media server exited with code %s", self._process.returncode)
+                return
+            try:
+                self.client.list_paths()
+                return
+            except MediaServerError:
+                time.sleep(0.2)
+        log.warning("media server API not reachable after %.0fs", self._ready_timeout)
+
+    def stop(self) -> None:
+        """Terminates MediaMTX, killing it if it doesn't exit within 5 seconds."""
+        if self._process is None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait()
+        self._process = None
 
 
 class _FfmpegListener:
@@ -204,17 +282,17 @@ class AudioListener(_FfmpegListener):
         media: "MediaServerClient",
         path: str,
         output_path: Union[str, Path],
-        sample_rate: int = 16000,
+        sampling_rate: int = 16000,
     ):
         super().__init__(url, media, path, output_path)
-        self._sample_rate = sample_rate
+        self._sampling_rate = sampling_rate
 
     def _build_cmd(self) -> list[str]:
         return [
             "ffmpeg", "-loglevel", "error", "-y",
             "-rtsp_transport", "tcp",
             "-i", self.url,
-            "-vn", "-f", "s16le", "-ac", "1", "-ar", str(self._sample_rate),
+            "-vn", "-f", "s16le", "-ac", "1", "-ar", str(self._sampling_rate),
             "-flush_packets", "1",
             "pipe:1",
         ]

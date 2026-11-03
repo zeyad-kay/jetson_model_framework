@@ -43,7 +43,7 @@ class _Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
 
-class StreamingServer:
+class ClientListener:
     """Listens on a TCP port for a remote client (e.g. a phone).
 
     Messages are one JSON object per line, e.g. {"command": "start_session"}.
@@ -68,10 +68,10 @@ class StreamingServer:
         self._server.on_message = self._on_message
         self.port = self._server.server_address[1]  # resolves port 0
         self._thread = threading.Thread(
-            target=self._server.serve_forever, name="streaming-server", daemon=True
+            target=self._server.serve_forever, name="client-listener", daemon=True
         )
         self._thread.start()
-        log.info("streaming server listening on %s:%d", self.host, self.port)
+        log.info("client listener listening on %s:%d", self.host, self.port)
 
     def close(self) -> None:
         if self._server is None:
@@ -81,7 +81,7 @@ class StreamingServer:
         self._thread.join()
         self._server = None
 
-    def __enter__(self) -> "StreamingServer":
+    def __enter__(self) -> "ClientListener":
         self.start()
         return self
 

@@ -7,8 +7,8 @@ from common.config import env_getter, parse_bool, parse_list, shared_paths
 
 @dataclass(frozen=True)
 class Config:
-    streaming_host: str = "0.0.0.0"
-    streaming_port: int = 8000
+    command_host: str = "0.0.0.0"
+    command_port: int = 8000
     # Bridge sockets of the services to health-check (the file stem is the name).
     services: tuple[str, ...] = (
         "/run/bridge/asr_service.sock",
@@ -29,6 +29,9 @@ class Config:
     media_api_url: str = "http://127.0.0.1:9997"
     # Where ffmpeg reads the published streams from (<url>/<session_id>).
     media_rtsp_url: str = "rtsp://127.0.0.1:8554"
+    # The MediaMTX binary (the Dockerfile extracts it to /app/mediamtx) and the config it runs with.
+    media_binary: str = "mediamtx/mediamtx"
+    media_config: str = str(Path(__file__).resolve().parent / "mediamtx.yml")
 
     @classmethod
     def load(cls, env_file: Optional[Union[str, Path]] = None) -> "Config":
@@ -51,12 +54,14 @@ class Config:
         return cls(
             **shared,
             services=services,
-            streaming_host=get("SERVER_STREAMING_HOST", str, defaults.streaming_host),
-            streaming_port=get("SERVER_STREAMING_PORT", int, defaults.streaming_port),
+            command_host=get("SERVER_COMMAND_HOST", str, defaults.command_host),
+            command_port=get("SERVER_COMMAND_PORT", int, defaults.command_port),
             monitor=get("SERVER_MONITOR", parse_bool, defaults.monitor),
             sampling_rate=get("SAMPLING_RATE", int, defaults.sampling_rate),
             ping_interval=get("SERVER_PING_INTERVAL", float, defaults.ping_interval),
             ping_timeout=get("SERVER_PING_TIMEOUT", float, defaults.ping_timeout),
             media_api_url=get("SERVER_MEDIA_API_URL", str, defaults.media_api_url),
             media_rtsp_url=get("SERVER_MEDIA_RTSP_URL", str, defaults.media_rtsp_url),
+            media_binary=get("SERVER_MEDIA_BINARY", str, defaults.media_binary),
+            media_config=get("SERVER_MEDIA_CONFIG", str, defaults.media_config),
         )

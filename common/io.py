@@ -63,8 +63,8 @@ class TimedTranscriptWriter:
 def pcm_to_mp3(
     pcm_path: Union[str, Path],
     mp3_path: Union[str, Path],
+    sampling_rate: int,
     log: logging.Logger,
-    sample_rate: int = 16000,
 ) -> bool:
     """Converts raw 16-bit mono PCM to an mp3. True on success; failures are logged to `log`."""
     pcm_path = Path(pcm_path)
@@ -74,7 +74,7 @@ def pcm_to_mp3(
     result = subprocess.run(
         [
             "ffmpeg", "-loglevel", "error", "-y",
-            "-f", "s16le", "-ac", "1", "-ar", str(sample_rate),
+            "-f", "s16le", "-ac", "1", "-ar", str(sampling_rate),
             "-i", str(pcm_path), str(mp3_path),
         ],
         stdout=subprocess.DEVNULL,
