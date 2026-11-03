@@ -68,10 +68,6 @@ class VideoModel(metaclass=_SingletonMeta):
         yield None, [], None, 0.0
 
 
-class _StopStreaming(Exception):
-    """Raised inside the frame reader when a stop was requested."""
-
-
 # Saturated colors that stand out on skin and typical backgrounds
 _PALETTE = [(255, 0, 0), (0, 200, 255), (255, 220, 0), (0, 255, 80), (255, 0, 255), (255, 128, 0)]
 
@@ -115,7 +111,6 @@ class Sam3(VideoModel):
         self._alpha = alpha
         self._colors = {}
         self._fps = None
-        self._stop_event = threading.Event()
         self._finish_event = threading.Event()
         self._processor = Sam3VideoProcessor.from_pretrained(model_id)
         self._model = Sam3VideoModel.from_pretrained(model_id, device_map=device, dtype=self._dtype).eval()
@@ -125,14 +120,10 @@ class Sam3(VideoModel):
         """Frame rate of the video being segmented; None until segment() has probed it."""
         return self._fps
 
-    def stop(self) -> None:
-        """Ask a running segment() to finish."""
-        self._stop_event.set()
-
     def finish(self) -> None:
         """Ask a running segment() to process the frames already written, then end.
 
-        Unlike stop(), the frames still queued are processed; segment() ends once
+        The frames still queued are processed; segment() ends once
         the file has stopped growing for `drain_idle` seconds.
         """
         self._finish_event.set()
@@ -141,8 +132,6 @@ class Sam3(VideoModel):
         """Wait until the growing file has a readable video stream; return (width, height, fps)."""
         deadline = time.time() + self._probe_timeout
         while time.time() < deadline:
-            if self._stop_event.is_set():
-                raise _StopStreaming
             if os.path.getsize(path) > 0:
                 res = subprocess.run(
                     ["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -185,7 +174,7 @@ class Sam3(VideoModel):
         threading.Thread(target=reader, daemon=True).start()
         last_frame = time.monotonic()
         try:
-            while not self._stop_event.is_set():
+            while True:
                 try:
                     buf = frames.get(timeout=0.5)
                 except queue.Empty:
@@ -223,22 +212,18 @@ class Sam3(VideoModel):
         draw the masks on it. seconds is the frame's position in the video,
         derived from the frame count and the stream's frame rate.
 
-        Runs until stop() is called, finish() is called and the file is
+        Runs until finish() is called and the file is
         drained, no frame arrives for idle_timeout seconds, or the generator is closed.
         """
         for _ in super().segment(video_path):  # validates the path exists
             pass
 
-        self._stop_event.clear()
         self._finish_event.clear()
         self._colors.clear()
         processor = self._processor
         model = self._model
 
-        try:
-            width, height, fps = self._probe_stream(video_path)
-        except _StopStreaming:
-            return
+        width, height, fps = self._probe_stream(video_path)
         self._fps = fps
 
         # A fresh session per call: tracking state must not leak between videos.

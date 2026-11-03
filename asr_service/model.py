@@ -79,7 +79,7 @@ class ASRModel(metaclass=_SingletonMeta):
 
 
 class _StopStreaming(Exception):
-    """Raised inside the audio reader when a stop was requested."""
+    """Raised inside the audio reader when transcribe() is shutting down its decoder thread."""
 
 
 class _TimedTokenStreamer:
@@ -171,14 +171,10 @@ class Nemotron(ASRModel):
         """Model-side streaming latency in milliseconds."""
         return self._processor.streaming_latency_ms
 
-    def stop(self) -> None:
-        """Ask a running transcribe() to finish."""
-        self._stop_event.set()
-
     def finish(self) -> None:
         """Ask a running transcribe() to decode the rest of the file, then end.
 
-        Unlike stop(), the delay margin is dropped, so the audio the writer
+        The delay margin is dropped, so the audio the writer
         flushed in the last `delay` seconds is transcribed too.
         """
         self._finish_event.set()
@@ -229,7 +225,7 @@ class Nemotron(ASRModel):
         accurate to about one audio chunk (the model decodes chunk by chunk).
         While no text is coming it yields ("", seconds) about every 0.5 s.
 
-        Runs until stop() is called, finish() is called and the file is
+        Runs until finish() is called and the file is
         drained, or the generator is closed.
         """
         for _ in super().transcribe(audio_path):  # validates the path exists
@@ -304,7 +300,7 @@ class Nemotron(ASRModel):
                         text, seconds = next(stream_iter)
                     except queue.Empty:
                         # No new text yet: yield an empty heartbeat so the caller sees
-                        # the audio position advance, then re-check the stop flag.
+                        # the audio position advance, then re-check the loop.
                         yield "", audio_end / self._sampling_rate
                         continue
                     except StopIteration:
