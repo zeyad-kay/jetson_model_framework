@@ -24,8 +24,8 @@ python src/epcr/dashboard/server.py            # http://localhost:7860
 - `--stage ex` = extraction only · `--stage ex_ag` = extraction then aggregation (default)
 - `--ex_model` / `--ex_prompt` = extraction model + prompt (`combined` or `separated`)
 - `--ag_model` / `--ag_prompt` = aggregator model + prompt (stage 2 only)
-- `--cumulative` also writes the running record at each segment · `--dry-run` prints the commands
-  without running · `--help` lists all flags
+- `--cumulative` also writes the running record at each segment
+- `--dry-run` prints the commands without running · `--help` lists all flags
 
 ## Output
 
@@ -39,5 +39,3 @@ results/subjectid_<id>/
         aggregate_raw.txt             the raw aggregator-LLM output
         aggregate_prompt.txt          the exact aggregator prompt used
 ```
-
-The dashboard reads these live — run a pipeline, then refresh the browser to see the new output.
