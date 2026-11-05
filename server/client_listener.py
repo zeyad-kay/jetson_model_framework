@@ -17,9 +17,22 @@ class UnAuthorized(Exception):
 
 
 class _Handler(socketserver.StreamRequestHandler):
-    """Reads newline-delimited JSON messages and writes one JSON reply per message."""
+    """Reads newline-delimited JSON messages and writes one JSON reply per message.
+
+    Only one connection is served at a time; any other gets a "busy" reply and is closed.
+    """
 
     def handle(self) -> None:
+        if not self.server.slot.acquire(blocking=False):
+            log.warning("rejected a second client from %s: busy", self.client_address[0])
+            self.wfile.write(json.dumps({"ok": False, "error": "busy: another client is connected"}).encode() + b"\n")
+            return
+        try:
+            self._serve()
+        finally:
+            self.server.slot.release()
+
+    def _serve(self) -> None:
         for line in self.rfile:
             line = line.strip()
             if not line:
@@ -42,6 +55,11 @@ class _Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def __init__(self, *args, **kwargs):
+        # Held by the connection being served; see _Handler.handle.
+        self.slot = threading.Lock()
+        super().__init__(*args, **kwargs)
+
 
 class ClientListener:
     """Listens on a TCP port for a remote client (e.g. a phone).
@@ -50,6 +68,10 @@ class ClientListener:
     Each is passed to on_message (called on a connection thread) along with the
     local address the client connected to, and the returned dict is sent back as
     the reply.
+
+    Only one client is served at a time. A second connection gets
+    {"ok": false, "error": "busy: ..."} and is closed straight away. A client
+    that goes silent without closing its socket keeps the slot until it drops.
 
     This class does no authentication itself: on_message decides what to accept
     (and can raise UnAuthorized to reject a client and drop the connection).
