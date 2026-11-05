@@ -1,0 +1,53 @@
+# ePCR extraction — the choosable inputs. Edit this file, not the code.
+# The dashboard (dashboard/build_data.py) and the pipeline (pipeline/extract.py) both read it.
+# All paths are relative to this folder (the project root); nothing points outside it.
+
+defaults:
+  subject: "<id>"              # which subject's transcript to use (dataset/subjectid_<id>.json)
+  dataset_dir: dataset         # where transcripts live
+  results_root: results        # stage 1 -> results/subjectid_<id>/extraction/<prompt>/<model>/ ; stage 2 -> .../aggregation/...
+  ground_truth_dir: dataset/ground_truth   # where the ground-truth xlsx lives (per subject: subjectid_<id>.xlsx)
+  code_index_dir: terminology/index  # SapBERT embedding index for --link (ATC / ICD-10-PCS)
+  thr: 180                     # pause-split threshold (seconds)
+  max_utts: 80                 # size cap per segment
+  max_new_tokens: 4096         # output generation cap
+
+# models you can choose from. key -> hugging face id.
+models:
+  qwen3_4b:  Qwen/Qwen3-4B-Instruct-2507
+  # more models are available — uncomment any to add it back to the roster:
+  # qwen3_8b:       Qwen/Qwen3-8B
+  # qwen3_30b:      Qwen/Qwen3-30B-A3B-Instruct-2507
+  # qwen3_32b:      Qwen/Qwen3-32B
+  # qwen25_72b:     Qwen/Qwen2.5-72B-Instruct
+  # qwen3_next_80b: Qwen/Qwen3-Next-80B-A3B-Instruct
+
+# stage-1 extraction prompts (the dashboard model x prompt grid).
+# key -> pipeline mode, prompt file (or dir for separated), label.
+prompts:
+  combined:  { mode: combined,  path: prompts/combined.txt, label: "Combined, all categories in one call" }
+  separated: { mode: separated, path: prompts/separated,   label: "Separated, one call per category" }
+
+# stage-2 aggregator: groups medications across segments. Extraction stays on a 4B model (it
+# follows the field schema better); the aggregator runs on its own model (it groups better).
+# Like the extraction model x prompt grid, the aggregator has its own model x prompt grid, so the
+# dashboard lets you pick extractor model, extractor prompt, aggregator model, aggregator prompt —
+# any combination. Results nest under the extraction run they read:
+#   aggregation/<ext_prompt>/<ext_model>/<agg_model>/<agg_prompt>/aggregate.json
+aggregate:
+  label: "Medication events"
+  models:                            # key -> hugging face id (the model the aggregator LLM runs on)
+    qwen25_7b: Qwen/Qwen2.5-7B-Instruct
+    qwen3_4b:  Qwen/Qwen3-4B-Instruct-2507
+  prompts:                           # key -> aggregator prompt file + label
+    events: { path: prompts/aggregate.txt, label: "Medication events" }
+
+# interventions are gated to this controlled vocabulary: the aggregator keeps only
+# interventions whose standard_name is one of these (matches the interventions prompt).
+intervention_vocab:
+  - advanced airway
+  - mechanical ventilation
+  - oxygen therapy
+  - chest decompression
+  - ultrasound
+  - cardiac monitoring

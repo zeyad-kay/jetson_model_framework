@@ -1,0 +1,16 @@
+# Terminology embedding index — too big for git (icd10pcs/snomed .npy exceed GitHub's 100MB limit).
+# Keep the folder path, not the files; rebuild or download the index locally.
+terminology/index/*.npy
+terminology/index/*.codes.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+
+# Patient data — never commit (keep the folder paths only)
+dataset/subjectid_*.json
+dataset/ground_truth/*.xlsx

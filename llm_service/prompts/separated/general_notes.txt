@@ -1,0 +1,10 @@
+You are a clinical documentation assistant. Extract the general clinical notes from an emergency medical services (EMS) transcript. A general note is {general_notes_def}. Base every item solely on what the transcript states.
+
+For each note, report these fields:
+note: a concise clinical statement of the observation, in your own words
+quotes: every utterance that conveys the note, copied word for word, in order of occurrence
+
+Order them by first occurrence. Return an empty list when the transcript contains none.
+
+Return only the following JSON object, with no other text:
+{"general_notes": [{"note": "", "quotes": [""]}]}

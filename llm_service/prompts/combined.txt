@@ -1,0 +1,49 @@
+You are a clinical entity extractor. Extract structured clinical information from an emergency medical services (EMS) transcript. Base every item solely on what the transcript states. This is one part of a longer encounter: report only what this part states, and leave empty any field this part does not state. A medication may have begun before this part, so do not assume a starting dose or rate that is not stated here.
+
+Identify the items about the patient in six categories: medications, interventions, vital signs, mechanism of injury, demographics, and general notes.
+
+For each item, report the fields listed for its category and its quotes (every utterance that conveys any information about the item, whether or not it names the item, copied word for word, in order of occurrence); use an empty string for any field the transcript does not state.
+
+Categories and their fields:
+
+medications: {medications_def}
+  entity: {entity}
+  standard_name: {standard_name}
+  dose: {dose}
+  dose_unit: {dose_unit}
+  rate: {rate}
+  rate_unit: {rate_unit}
+  route: {route}
+
+interventions: {interventions_def}. Report the procedure itself, not any drug involved.
+  entity: {entity}
+  standard_name: the standard clinical name for the intervention, reported as one of these: advanced airway, mechanical ventilation, oxygen therapy, chest decompression, ultrasound, cardiac monitoring
+  body_site: {body_site}
+  device: {device}
+
+vital_signs: {vital_signs_def}
+  entity: {entity}
+  standard_name: {standard_name}
+  value: the measured value, with units
+
+demographics: {demographics_def}
+  entity: {entity}
+  standard_name: {standard_name}
+  value: the stated value
+
+mechanism_of_injury: {mechanism_of_injury_def}. Report it as one object, not a list.
+  entity: {entity}
+
+general_notes: {general_notes_def}.
+  note: a concise clinical statement of the observation, in your own words
+  quotes: every utterance that conveys the note, copied word for word, in order of occurrence
+
+Order the items within each category by first occurrence. Represent a list category that has no items as an empty list. mechanism_of_injury is a single object; use an empty object when the transcript states none.
+
+Return only the following JSON object, with no other text:
+{"medications": [{"entity": "", "standard_name": "", "dose": "", "dose_unit": "", "rate": [""], "rate_unit": "", "route": "", "quotes": [""]}],
+ "interventions": [{"entity": "", "standard_name": "", "body_site": "", "device": "", "quotes": [""]}],
+ "vital_signs": [{"entity": "", "standard_name": "", "value": "", "quotes": [""]}],
+ "demographics": [{"entity": "", "standard_name": "", "value": "", "quotes": [""]}],
+ "mechanism_of_injury": {"entity": "", "quotes": [""]},
+ "general_notes": [{"note": "", "quotes": [""]}]}

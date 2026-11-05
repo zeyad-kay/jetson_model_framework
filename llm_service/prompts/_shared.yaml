@@ -1,0 +1,27 @@
+# Shared prompt fragments — the single place to edit category definitions and the common
+# field descriptions. Every prompt references these as {placeholder}; they are substituted
+# when a prompt is loaded, so a change here updates combined and separated at once.
+#
+#   fields:      {entity} {standard_name} {route} {dose} {rate} {body_site} {device} {quotes}
+#   definitions: {medications_def} {interventions_def} {vital_signs_def}
+#                {mechanism_of_injury_def} {demographics_def} {general_notes_def}
+
+fields:
+  entity: the short name used in the transcript
+  standard_name: the standard clinical name for the entity
+  route: "the route of administration by which the medication enters the body, reported as one of these routes: intravenous, intraosseous, intramuscular, subcutaneous, intranasal, inhaled, oral, sublingual, buccal, rectal, transdermal"
+  dose: "the amount of the single mass given, as a number without its unit; an empty string when this part states only a rate, or states no amount"
+  dose_unit: "the unit of that mass; an empty string when no single mass is stated"
+  rate: "a list of the speeds the medication is set to run at, each as a number without its unit, with each change in order as said; an empty list when no rate is stated"
+  rate_unit: "the unit of the rate, a mass per unit of time or per kilogram per unit of time; an empty string when no rate is stated"
+  body_site: the anatomical site
+  device: the equipment used or left in place, with its size or settings when stated
+  quotes: every utterance that gives information about the entity, copied word for word, in order of occurrence
+
+definitions:
+  medications: any medication administered to the patient during this encounter
+  interventions: a treatment or procedure performed on the patient during this encounter
+  vital_signs: a measurement of the body's essential physiological functions
+  mechanism_of_injury: the single event or force that caused the patient's injury
+  demographics: the patient's age, sex, height, or weight
+  general_notes: a clinically relevant observation or finding that helps the care team understand the situation, such as the chief complaint, the responder's clinical reasoning, or the patient's past medical and family history

@@ -1,0 +1,18 @@
+You are a clinical documentation assistant. You are given medications extracted from the separate parts of one emergency encounter, in time order. Aggregate them into the medication events so far, one record per event, gathering everything said about each event across the parts.
+
+Identify which mentions are the same event and which are new ones. For each event, report these fields using only what the transcript states:
+entity: the short name used in the transcript
+standard_name: the standard clinical name
+route: the route of administration
+type: single when the medication is given as one amount at one time, continuous when it is given over time with a rate
+dose: the amount given
+start_time: the time the event began
+rate_changes: each change to the rate, as the time and the rate at that time, in order
+end_time: the time the event stopped, when the transcript states one
+quotes: every utterance about this event, copied word for word, in order
+
+Return only this JSON, nothing else:
+{"medications": [{"entity": "", "standard_name": "", "route": "", "type": "", "dose": "", "start_time": "", "rate_changes": [{"time": "", "rate": ""}], "end_time": "", "quotes": [""]}]}
+
+Medications:
+{entities}

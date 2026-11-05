@@ -1,0 +1,357 @@
+<meta charset="utf-8">
+<title>PCR Segment Bench</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: pick a segment; columns are gold · transcript · N comparison columns, each with its own model+prompt. */
+:root{
+  --bg:#eef1f4; --surface:#fff; --surface2:#e9edf1; --fg:#15202b; --muted:#5d6b7a; --border:#d6dce2;
+  --accent:#0d7a7a; --accent-fg:#fff; --gold:#9a6b00; --goldbg:#fbf3df;
+  --med:#1f6feb; --iv:#8250df; --vit:#0d7a7a; --moi:#b4690e; --demo:#6e7781; --note:#57606a; --bad:#b3261e;
+  --atc-ex:#1a7f37; --atc-sim:#9a6b00; --atc-low:#b3261e; --atc-ex-bg:#e7f3ea; --atc-sim-bg:#fbf3df; --atc-low-bg:#fbe6e6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e1419; --surface:#161d24; --surface2:#1d262e; --fg:#e4e9ee; --muted:#9aa7b2; --border:#2a343d;
+  --accent:#2dd4bf; --accent-fg:#06201e; --gold:#e3b341; --goldbg:#241d0d;
+  --med:#6ea8fe; --iv:#c197fb; --vit:#2dd4bf; --moi:#e3a008; --demo:#9aa7b2; --note:#8b98a5; --bad:#f87171;
+  --atc-ex:#3fb950; --atc-sim:#e3b341; --atc-low:#f87171; --atc-ex-bg:#122117; --atc-sim-bg:#241d0d; --atc-low-bg:#2a1113;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0e1419; --surface:#161d24; --surface2:#1d262e; --fg:#e4e9ee; --muted:#9aa7b2; --border:#2a343d;
+  --accent:#2dd4bf; --accent-fg:#06201e; --gold:#e3b341; --goldbg:#241d0d;
+  --med:#6ea8fe; --iv:#c197fb; --vit:#2dd4bf; --moi:#e3a008; --demo:#9aa7b2; --note:#8b98a5; --bad:#f87171;
+  --atc-ex:#3fb950; --atc-sim:#e3b341; --atc-low:#f87171; --atc-ex-bg:#122117; --atc-sim-bg:#241d0d; --atc-low-bg:#2a1113;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:"IBM Plex Sans",system-ui,sans-serif;line-height:1.45}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.wrap{max-width:none;margin:0;
+  padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:max(12px,env(safe-area-inset-right,0px));
+  padding-block:14px 60px}
+h1{font-size:1.25rem;margin:0;font-weight:700;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:.82rem;margin:4px 0 0}
+header{margin-bottom:14px}
+
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--bg);
+  padding-block:10px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.barrow{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.barrow + .barrow{margin-top:10px}
+.lbl{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);min-width:62px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--border);background:var(--surface);color:var(--fg);font:inherit;font-size:.8rem;
+  font-weight:500;padding:5px 11px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.segchip[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:600}
+
+.cols{display:grid;gap:12px;align-items:start;
+  grid-template-columns:230px 300px minmax(0,1fr)}
+@media (max-width:820px){.cols{grid-template-columns:1fr}}
+.col{min-width:0}
+.colhd{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+  margin:0 0 8px;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:24px}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:12px 13px}
+.panel.gold{border-color:color-mix(in srgb,var(--gold) 45%,var(--border));background:var(--goldbg)}
+
+.catblk{padding:7px 0;border-top:1px solid var(--border)}
+.catblk:first-child{border-top:0;padding-top:0}
+.catname{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+  margin-bottom:5px;display:flex;justify-content:space-between}
+.ents{display:flex;flex-direction:column;gap:5px}
+.empty{color:var(--muted);font-size:.78rem;font-style:italic}
+details.ent{border:1px solid var(--border);border-radius:7px;background:var(--surface2);max-width:100%}
+.panel.gold details.ent{background:color-mix(in srgb,var(--gold) 9%,var(--surface))}
+details.ent>summary{cursor:pointer;list-style:none;padding:4px 9px;font-size:.81rem;display:block;border-radius:7px}
+details.ent>summary::-webkit-details-marker{display:none}
+.enthd{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.nm{font-weight:600}.unnamed{color:var(--bad);font-style:italic;font-weight:600}
+.badge{font-size:.64rem;font-weight:600;padding:1px 6px;border-radius:5px;border:1px solid var(--border);
+  color:var(--muted);background:var(--bg);white-space:normal;overflow-wrap:anywhere;max-width:100%}
+.atcbadge{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.63rem;font-weight:700;
+  padding:1px 6px;border-radius:5px;border:1px solid transparent;white-space:nowrap}
+.atc-exact{color:var(--atc-ex);background:var(--atc-ex-bg);border-color:var(--atc-ex)}      /* exact normalized match */
+.atc-sim{color:var(--atc-sim);background:var(--atc-sim-bg);border-color:var(--atc-sim)}     /* SapBERT similarity, with score */
+.atc-low{color:var(--atc-low);background:var(--atc-low-bg);border-color:var(--atc-low)}     /* below threshold, uncertain */
+.tbadge{font-size:.62rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  padding:1px 6px;border-radius:5px;color:var(--accent);background:var(--surface2);border:1px solid var(--border)}
+.rct{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.62rem;font-weight:600;color:var(--accent)}
+.runit{font-size:.6rem;font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0}
+.rate{display:flex;flex-wrap:wrap;gap:3px 4px;align-items:baseline;margin:4px 0 0;min-width:0}
+.rlbl{font-size:.58rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+.rstep{font-size:.66rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px;
+  padding:1px 6px;overflow-wrap:anywhere}
+.rarrow{color:var(--muted);font-size:.6rem}
+.ct{font-size:.64rem;color:var(--muted);margin-left:auto}
+.said{font-size:.7rem;color:var(--muted);font-style:italic}
+.etime{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.64rem;font-weight:600;color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:4px;padding:1px 5px;white-space:nowrap}
+.gtime{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.66rem;font-weight:600;
+  color:var(--gold);background:color-mix(in srgb,var(--gold) 14%,transparent);
+  border-radius:4px;padding:1px 5px;white-space:nowrap}
+details.ent .quotes{padding:6px 9px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px}
+.q{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.73rem;padding-left:9px;
+  border-left:2px solid var(--border);color:var(--fg);line-height:1.4}
+.qt{display:inline-block;font-weight:600;color:var(--accent);margin-right:6px;
+  font-size:.66rem;letter-spacing:.02em}
+.gfields{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.68rem;color:var(--muted);
+  padding:4px 9px;border-top:1px dashed var(--border);word-break:break-word}
+.cat-medications .nm{color:var(--med)} .cat-interventions .nm{color:var(--iv)}
+.cat-vital_signs .nm{color:var(--vit)} .cat-mechanism_of_injury .nm{color:var(--moi)}
+.cat-demographics .nm{color:var(--demo)} .cat-general_notes .nm{color:var(--note)}
+.gwarn{font-size:.62rem;font-weight:700;color:var(--bad);
+  border:1px solid color-mix(in srgb,var(--bad) 45%,var(--border));border-radius:5px;padding:0 5px}
+
+.trbody{display:flex;flex-direction:column;gap:3px;max-height:74vh;overflow-y:auto}
+.trline{display:grid;grid-template-columns:62px 1fr;gap:8px;font-size:.8rem;padding:2px 0;align-items:baseline}
+.trline .tt{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.68rem;color:var(--muted)}
+
+.cmpgrid{display:grid;gap:12px;grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:1250px){.cmpgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:820px){.cmpgrid{grid-template-columns:1fr}}
+.cmpcard .chd{display:flex;flex-direction:column;gap:7px;margin-bottom:9px}
+.selrow{display:flex;gap:7px;align-items:center}
+.selrow select{flex:1;min-width:0;font:inherit;font-size:.8rem;font-weight:600;color:var(--fg);
+  background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:5px 7px}
+.selgrp{display:flex;flex-direction:column;gap:4px}
+.selstatic{flex:1;min-width:0;font-size:.8rem;font-weight:600;color:var(--fg);padding:5px 2px}
+.selgrp-l{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.selgrp-r{display:flex;gap:6px;align-items:center}
+.rmbtn{border:1px solid var(--border);background:var(--surface);color:var(--muted);font:inherit;
+  font-size:.95rem;line-height:1;width:28px;height:28px;border-radius:7px;cursor:pointer;flex:none}
+.rmbtn:hover{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--border))}
+.addbtn{border:1px solid var(--accent);background:transparent;color:var(--accent);font:inherit;
+  font-size:.76rem;font-weight:600;padding:4px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.addbtn:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+details.pv>summary{cursor:pointer;list-style:none;font-size:.7rem;font-weight:600;color:var(--accent);
+  letter-spacing:.03em}
+details.pv>summary::-webkit-details-marker{display:none}
+details.pv>summary::before{content:"▸ ";font-size:.6rem}
+details.pv[open]>summary::before{content:"▾ "}
+details.pv pre{white-space:pre-wrap;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.7rem;
+  background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin:6px 0 0;
+  max-height:40vh;overflow:auto;color:var(--fg)}
+.miss{color:var(--muted);font-size:.78rem;font-style:italic;padding:4px 0}
+.note{color:var(--muted);font-size:.82rem;padding:14px}
+</style>
+
+<div class="wrap">
+  <header><h1>PCR Segment Bench</h1></header>
+  <div class="bar">
+    <div class="barrow"><span class="lbl">Datapoint</span><div class="chips" id="subjsel"></div></div>
+    <div class="barrow"><span class="lbl">View</span><div class="chips" id="viewsel">
+      <button class="chip segchip" data-view="segment" aria-pressed="true">Per-segment</button>
+      <button class="chip segchip" data-view="cumulative" aria-pressed="false">Cumulative</button>
+    </div></div>
+    <div class="barrow"><span class="lbl" id="seglbl">Segment</span><div class="chips" id="segsel"></div></div>
+  </div>
+
+  <div class="cols">
+    <div class="col"><div class="colhd">Ground truth</div><div class="panel gold" id="goldcol"></div></div>
+    <div class="col"><div class="colhd" id="trhd">Transcript</div><div class="panel"><div class="trbody" id="trcol"></div></div></div>
+    <div class="col">
+      <div class="colhd"><span id="cmphd">Comparisons</span><button id="addcol" class="addbtn">+ Add comparison</button></div>
+      <div class="cmpgrid" id="cmpcol"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CATLBL={medications:"meds",interventions:"interventions",vital_signs:"vitals",
+  mechanism_of_injury:"MOI",demographics:"demographics",general_notes:"notes"};
+const DET=["dose","route","rate","body_site","device","value"];
+const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+// Three selectable variables: datapoint (subject) · prompt · model.
+// ALL = the whole file {subjects, subject, cats, prompts, models, bySubject}.
+// DB  = the current datapoint's view (its segments/gold/runs + the shared prompts/models).
+let ALL=null, DB=null, subject=null, seg=1, have=new Set(), cols=[], view="segment";
+
+// Data source: an injected global (when embedded) or ./data.json (static page).
+if(window.__DATA__){ ALL=window.__DATA__; boot(); }
+else fetch("./data.json").then(r=>r.json()).then(d=>{ALL=d;boot();})
+  .catch(()=>{const h=document.querySelector("header");if(h)h.insertAdjacentHTML("beforeend",'<p class="sub">Could not load data.json — run build_data.py first.</p>');});
+
+function boot(){
+  subject=ALL.subject;
+  renderSubjects();
+  loadSubject(subject);
+  window.addEventListener("resize",()=>{ if(DB) renderCmp(); });
+  document.getElementById("addcol").onclick=()=>{
+    if(!DB) return;
+    const d=(DB.present&&DB.present[0])?{p:DB.present[0][0],m:DB.present[0][1]}
+           :{p:(DB.prompts[0]||{}).key,m:(DB.models[0]||{}).key};
+    cols.push(newCol(d.p,d.m)); renderCmp();
+  };
+  document.getElementById("viewsel").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    view=b.dataset.view; renderViewSel(); render();
+  });
+}
+function renderViewSel(){
+  document.getElementById("viewsel").querySelectorAll("button")
+    .forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.view===view)));
+  document.getElementById("seglbl").textContent = view==="cumulative" ? "Up to segment" : "Segment";
+}
+// a new comparison column: extractor (prompt+model) plus the aggregator (model+prompt) that
+// has data for it, falling back to the first roster entry.
+function newCol(p,m){
+  const byM=(((DB.aggs||{})[p]||{})[m])||{};
+  const am=Object.keys(byM)[0]||((DB.aggModels[0]||{}).key);
+  const ap=(am&&byM[am]?Object.keys(byM[am])[0]:null)||((DB.aggPrompts[0]||{}).key);
+  return {p,m,am,ap};
+}
+// the record to show for a comparison column, per view
+function colRec(c){
+  if(view==="cumulative"){
+    const a=((((((DB.aggs||{})[c.p]||{})[c.m])||{})[c.am]||{})[c.ap])||{};
+    return a[String(seg)]!==undefined?a[String(seg)]:a["all"];
+  }
+  return have.has(c.p+"|"+c.m) ? ((DB.runs[c.p]||{})[c.m]||{})[String(seg)] : undefined;
+}
+// gold for the current view: one segment, or the union of segments 1..seg (cumulative)
+function goldRec(){
+  const g=DB.gold||{};
+  if(view!=="cumulative") return g[String(seg)];
+  const merged={}; let any=false;
+  for(let n=1;n<=seg;n++){ const r=g[String(n)]; if(!r) continue;
+    DB.cats.forEach(c=>{ if(r[c]&&r[c].length){ (merged[c]=merged[c]||[]).push(...r[c]); any=true; } }); }
+  return any?merged:undefined;
+}
+function renderSubjects(){
+  const el=document.getElementById("subjsel"); el.innerHTML="";
+  ALL.subjects.forEach(s=>{
+    const b=document.createElement("button"); b.className="chip segchip"; b.textContent=s; b.title="SubjectID "+s;
+    b.setAttribute("aria-pressed",String(s===subject));
+    b.onclick=()=>{ if(s!==subject){ subject=s; renderSubjects(); loadSubject(s); } };
+    el.appendChild(b);
+  });
+}
+function loadSubject(s){
+  const d=ALL.bySubject[s]||{segments:[],gold:{},runs:{},present:[],scenario:"SubjectID "+s};
+  DB={...d, cats:ALL.cats, prompts:ALL.prompts, models:ALL.models, subjects:ALL.subjects,
+      aggModels:ALL.aggModels, aggPrompts:ALL.aggPrompts};
+  seg=1; have=new Set();
+  init();
+}
+
+function init(){
+  DB.present.forEach(([p,m])=>have.add(p+"|"+m));
+  // default two columns from the first distinct present runs
+  // default: one column per prompt (first model that has data), filled to three
+  const byPrompt={}; DB.present.forEach(([p,m])=>{ if(!(p in byPrompt)) byPrompt[p]=m; });
+  cols=DB.prompts.filter(p=>p.key in byPrompt).slice(0,4).map(p=>newCol(p.key,byPrompt[p.key]));
+  while(cols.length<Math.min(4,DB.prompts.length) && DB.present.length){ const l=DB.present[0]; cols.push(newCol(l[0],l[1])); }
+  renderSeg(); render();
+}
+function renderSeg(){
+  const el=document.getElementById("segsel"); el.innerHTML="";
+  DB.segments.forEach(s=>{
+    const b=document.createElement("button"); b.className="chip segchip"; b.textContent=s.i; b.title=s.clock;
+    b.setAttribute("aria-pressed",String(s.i===seg));
+    b.onclick=()=>{seg=s.i;renderSeg();render();}; el.appendChild(b);
+  });
+}
+function entHtml(cat,it,gold){
+  const nm=it.entity&&it.entity.trim()?`<span class="nm">${esc(it.entity)}</span>`:`<span class="unnamed">(unnamed)</span>`;
+  const std=(it.standard_name&&it.standard_name.trim()&&it.standard_name.trim().toLowerCase()!==(it.entity||"").trim().toLowerCase())?`<span class="said">→ ${esc(it.standard_name)}</span>`:"";
+  // interventions (new schema): category = which procedure, details = {field: value}
+  const catb=(it.category&&it.category.trim()&&it.category.trim().toLowerCase()!==(it.entity||"").trim().toLowerCase())?`<span class="said">→ ${esc(it.category)}</span>`:"";
+  const det=(it.details&&typeof it.details==="object")?Object.entries(it.details)
+    .filter(([k,v])=>v!==null&&v!==""&&!(Array.isArray(v)&&!v.length))
+    .map(([k,v])=>`<span class="badge">${esc(k)}: ${esc(Array.isArray(v)?v.join(", "):(typeof v==="object"?JSON.stringify(v):String(v)))}</span>`).join(""):"";
+  const etime=(!gold&&it.time)?`<span class="etime">${esc(String(it.time).slice(0,8))}</span>`:"";
+  const badges=DET.filter(d=>d!=="rate" && d!=="dose" && it[d] && !(Array.isArray(it[d])&&!it[d].length))
+    .map(d=>`<span class="badge">${d}: ${esc(Array.isArray(it[d])?it[d].join(", "):it[d])}</span>`).join("");
+  const dose=it.dose?`<span class="badge">dose: ${esc(it.dose)}${it.dose_unit?" "+esc(it.dose_unit):""}</span>`:"";
+  const ru=it.rate_unit?` <span class="runit">${esc(it.rate_unit)}</span>`:"";
+  const rate=(Array.isArray(it.rate)&&it.rate.length)
+    ? `<div class="rate"><span class="rlbl">rate${ru}</span>${it.rate.map(r=>`<span class="rstep">${esc(r)}</span>`).join('<span class="rarrow">→</span>')}</div>`
+    : "";
+  // stage-2 event schema: rate_changes = [{time, rate}], plus type (single/continuous) and end_time
+  const rc=(Array.isArray(it.rate_changes)&&it.rate_changes.length)
+    ? `<div class="rate"><span class="rlbl">rate${ru}</span>${it.rate_changes.map(c=>`<span class="rstep">${c&&c.time?`<span class="rct">${esc(String(c.time).slice(0,8))}</span> `:""}${esc((c&&c.rate)||"")}</span>`).join('<span class="rarrow">→</span>')}</div>`
+    : "";
+  const typ=it.type?`<span class="tbadge">${esc(it.type)}</span>`:"";
+  const endt=(!gold&&it.end_time)?`<span class="etime">→ ${esc(String(it.end_time).slice(0,8))}</span>`:"";
+  const gtime=(gold&&it.clock)?`<span class="gtime">${esc(it.clock)}</span>`:"";
+  const qs=(it.quotes||[]).map((q,qi)=>{
+    const qt=(it.qtimes&&it.qtimes[qi])?`<span class="qt">${esc(it.qtimes[qi])}</span>`:"";
+    return `<div class="q">${qt}${esc(q)}</div>`;
+  }).join("");
+  const qbody=qs?`<div class="quotes">${qs}</div>`:"";
+  const gf=gold&&it.fields?`<div class="gfields">${esc(it.fields)}</div>`:"";
+  const ct=(it.quotes&&it.quotes.length)?`<span class="ct">${it.quotes.length}q</span>`:"";
+  const atc=(it.atc&&it.atc.code)?(()=>{
+    const a=it.atc, exact=a.match==="exact";
+    const cls=exact?"atc-exact":(a.codeable?"atc-sim":"atc-low");
+    const tag=exact?"exact":`~${(a.score!=null?a.score:"")}`;
+    return `<span class="atcbadge ${cls}" title="ATC ${esc(a.code)} ${esc(a.name||"")} · ${esc(a.match||"")} ${a.score!=null?a.score:""}">ATC ${esc(a.code)} · ${esc(tag)}</span>`;
+  })():"";
+  return `<details class="ent cat-${cat}"><summary><div class="enthd">${etime}${endt}${gtime}${nm}${std}${catb}${typ}${atc}${dose}${det}${badges}${ct}</div>${rate}${rc}</summary>${qbody}${gf}</details>`;
+}
+function catBlocks(rec,gold,miss){
+  if(rec===undefined) return `<div class="miss">${esc(miss||"no data for this selection")}</div>`;
+  let any=false,h="";
+  DB.cats.forEach(c=>{
+    const items=rec[c]||[]; if(!items.length) return; any=true;
+    h+=`<div class="catblk"><div class="catname"><span>${CATLBL[c]}</span><span>${items.length}</span></div><div class="ents">`;
+    h+=items.map(it=>entHtml(c,it,gold)).join("")+`</div></div>`;
+  });
+  return any?h:`<div class="empty">— nothing here —</div>`;
+}
+function render(){
+  renderViewSel();
+  const s=DB.segments.find(x=>x.i===seg);
+  document.getElementById("trhd").textContent=`Transcript · seg ${seg} · ${s.clock} · ${s.n} lines`;
+  const gmiss = view==="cumulative" ? "no gold up to this segment" : "no gold in this segment";
+  document.getElementById("goldcol").innerHTML=catBlocks(goldRec(),true,gmiss);
+  document.getElementById("trcol").innerHTML=(s.transcript||[])
+    .map(l=>`<div class="trline"><span class="tt">${esc(l.t)}</span><span>${esc(l.u)}</span></div>`).join("");
+  renderCmp();
+}
+function selList(kind){ return kind==="m"?DB.models:kind==="p"?DB.prompts:kind==="am"?DB.aggModels:DB.aggPrompts; }
+function selHtml(kind,chosen){
+  return selList(kind).map(o=>`<option value="${o.key}"${o.key===chosen?" selected":""}>${esc(o.label)}</option>`).join("");
+}
+// always a dropdown for model and prompt, on both stages (even with a single option)
+function selOrLabel(kind,i,chosen){
+  return `<select data-i="${i}" data-k="${kind}">${selHtml(kind,chosen)}</select>`;
+}
+function renderCmp(){
+  document.getElementById("cmphd").textContent=
+    `Comparisons (${cols.length})` + (view==="cumulative" ? ` · cumulative through seg ${seg}` : "");
+  const grid=document.getElementById("cmpcol");
+  const w=window.innerWidth, ncol=(w<=820?1:w<=1250?2:Math.min(cols.length,4));
+  grid.style.gridTemplateColumns=`repeat(${ncol},minmax(0,1fr))`;
+  const miss = view==="cumulative"
+    ? "no running aggregation for this model + prompt (run pipeline/aggregate.py --cumulative)"
+    : "no run yet for this model + prompt";
+  grid.innerHTML=cols.map((c,i)=>{
+    const prompt=DB.prompts.find(p=>p.key===c.p);
+    const exText=prompt?prompt.text:"";
+    // aggregator prompt text: the one the selected run actually used, else the live roster prompt
+    const usedText=((((DB.aggPromptsUsed||{})[c.p]||{})[c.m]||{})[c.am]||{})[c.ap];
+    const rosterText=(DB.aggPrompts.find(x=>x.key===c.ap)||{}).text||"";
+    const aggText=usedText||rosterText;
+    const aggm=((DB.aggModels.find(x=>x.key===c.am)||{}).label||"").split("/").pop();
+    // view the prompt for both stages: the extractor (prompt + model) and the aggregator (model + prompt)
+    const exPV=`<details class="pv"><summary>view the extraction prompt · ${esc(c.m)}</summary><pre>${esc(exText)}</pre></details>`;
+    const aggPV=`<details class="pv"><summary>view the aggregator prompt${aggm?` · ${esc(aggm)}`:""}</summary><pre>${esc(aggText)}</pre></details>`;
+    const rec=colRec(c);
+    return `<div class="panel cmpcard">
+      <div class="chd">
+        <div class="selgrp"><div class="selgrp-l">extractor · model × prompt</div>
+          <div class="selgrp-r">${selOrLabel("m",i,c.m)}${selOrLabel("p",i,c.p)}<button class="rmbtn" data-rm="${i}" title="remove this comparison">&times;</button></div></div>
+        <div class="selgrp"><div class="selgrp-l">aggregator · model × prompt</div>
+          <div class="selgrp-r">${selOrLabel("am",i,c.am)}${selOrLabel("ap",i,c.ap)}</div></div>
+        ${exPV}${aggPV}
+      </div>
+      ${catBlocks(rec,false,miss)}
+    </div>`;
+  }).join("");
+  grid.querySelectorAll("select").forEach(sel=>sel.onchange=e=>{
+    const i=+e.target.dataset.i, k=e.target.dataset.k; cols[i][k]=e.target.value; renderCmp();
+  });
+  grid.querySelectorAll(".rmbtn").forEach(b=>b.onclick=e=>{
+    cols.splice(+e.currentTarget.dataset.rm,1); renderCmp();
+  });
+}
+</script>
