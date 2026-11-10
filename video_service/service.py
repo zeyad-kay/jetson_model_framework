@@ -25,6 +25,7 @@ class VideoService(WorkerService):
     def _load_model(self) -> Sam3:
         cfg = self.config
         model = Sam3(
+            prompt=cfg.prompt,
             idle_timeout=cfg.idle_timeout,
             probe_timeout=cfg.probe_timeout,
             drain_idle=cfg.drain_idle,

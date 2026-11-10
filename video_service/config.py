@@ -10,6 +10,8 @@ class Config:
     # Root of the shared sessions volume; each session is <sessions_dir>/<session_id>/.
     sessions_dir: str = "/sessions"
     bridge_path: str = "/run/bridge/video_service.sock"
+    # Text prompt naming what SAM 3 segments.
+    prompt: str = "wound"
     # Seconds without a new frame before the video is considered finished.
     idle_timeout: float = 10.0
     # Seconds the file must stop growing, after the session ends, before segmentation finishes.
@@ -33,6 +35,7 @@ class Config:
         defaults = cls()
         return cls(
             **shared_paths(get, "video_service", "video", defaults),
+            prompt=get("VIDEO_PROMPT", str, defaults.prompt),
             idle_timeout=get("VIDEO_IDLE_TIMEOUT", float, defaults.idle_timeout),
             drain_idle=get("VIDEO_DRAIN_IDLE", float, defaults.drain_idle),
             probe_timeout=get("VIDEO_PROBE_TIMEOUT", float, defaults.probe_timeout),
