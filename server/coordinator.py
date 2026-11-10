@@ -2,7 +2,7 @@ import threading
 from typing import NamedTuple
 
 from server.config import Config
-from server.log import get_logger
+from common.log import get_logger
 from server.media import MediaServer, MediaServerError
 from server.services import WorkerServiceManager
 from server.sessions import Session

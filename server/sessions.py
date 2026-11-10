@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Union
 
 from common.io import pcm_to_mp3, ts_to_mp4
-from server.log import get_logger
+from common.log import get_logger
 from server.media import AudioListener, MediaServer, VideoListener
 
 log = get_logger(__name__)

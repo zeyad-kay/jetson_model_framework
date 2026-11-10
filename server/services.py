@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from common.bridge import BridgeClient
-from server.log import get_logger
+from common.log import get_logger
 
 log = get_logger(__name__)
 
@@ -36,12 +36,12 @@ class WorkerServiceClient:
 
     def start_session(self, session_id: str) -> bool:
         """Tells the service to start working on a session. True if it replied ok."""
-        reply = self.send({"command": "start", "session_id": session_id})
-        return self._ok("start", reply)
+        reply = self.send({"command": "queue_session", "session_id": session_id})
+        return self._ok("queue_session", reply)
 
     def stop_session(self) -> bool:
         """Tells the service to stop its current session. True if it replied ok."""
-        return self._ok("stop", self.send({"command": "stop"}))
+        return self._ok("end_session", self.send({"command": "end_session"}))
 
     def _ok(self, command: str, reply: Optional[dict]) -> bool:
         ok = reply is not None and reply.get("ok") is True
@@ -85,7 +85,7 @@ class WorkerServiceManager:
             self._services[service.name] = service
         self.ping_interval = ping_interval
         self.monitor = monitor
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def __getitem__(self, name: str) -> WorkerServiceClient:
@@ -138,13 +138,13 @@ class WorkerServiceManager:
         """Pings every service each ping_interval in a background thread. A no-op if already running."""
         if self._thread is not None:
             return
-        self._stop.clear()
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._monitor, name="monitor", daemon=True)
         self._thread.start()
 
     def stop_monitoring(self) -> None:
         """Stops the monitor thread. A no-op if it isn't running."""
-        self._stop.set()
+        self._stop_event.set()
         if self._thread is not None:
             self._thread.join()
             self._thread = None
@@ -153,5 +153,5 @@ class WorkerServiceManager:
         while True:
             for service in self:
                 service.ping()
-            if self._stop.wait(self.ping_interval):
+            if self._stop_event.wait(self.ping_interval):
                 return

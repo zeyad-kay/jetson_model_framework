@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Union
 from urllib.parse import quote, urlsplit
 
-from server.log import get_logger
+from common.log import get_logger
 
 log = get_logger(__name__)
 
@@ -201,7 +201,7 @@ class _FfmpegListener:
         self._media = media
         self._path = path
         self._poll_interval = poll_interval
-        self._stopped = threading.Event()
+        self._stopped_event = threading.Event()
         self._proc: Optional[subprocess.Popen] = None
         self._last_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
@@ -215,7 +215,7 @@ class _FfmpegListener:
         self._thread.start()
 
     def stop(self) -> None:
-        self._stopped.set()
+        self._stopped_event.set()
         proc = self._proc
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -225,29 +225,29 @@ class _FfmpegListener:
 
     def _run(self) -> None:
         first = True
-        while not self._stopped.is_set():
+        while not self._stopped_event.is_set():
             if not self._wait_for_publisher():
                 return
             if not first:
                 log.info("publisher is back on %s, resuming recording", self._path)
             first = False
             self._run_ffmpeg()
-            if self._stopped.is_set():
+            if self._stopped_event.is_set():
                 return
             log.warning("lost the stream on %s, waiting for the publisher to reconnect", self._path)
             # Right after a drop MediaMTX may still report the dead publisher
             # as ready; the pause keeps a stale path from causing a respawn loop.
-            self._stopped.wait(self._retry_delay)
+            self._stopped_event.wait(self._retry_delay)
 
     def _wait_for_publisher(self) -> bool:
         """Blocks until a publisher is live. False if the listener was stopped first."""
-        while not self._stopped.is_set():
+        while not self._stopped_event.is_set():
             try:
                 if self._media.is_streaming(self._path):
                     return True
             except MediaServerError as exc:
                 log.info("media server not reachable: %s", exc)
-            self._stopped.wait(self._poll_interval)
+            self._stopped_event.wait(self._poll_interval)
         return False
 
     def _run_ffmpeg(self) -> None:
@@ -256,7 +256,7 @@ class _FfmpegListener:
                 self._build_cmd(), stdout=out, stderr=subprocess.PIPE
             )
             log.info("ffmpeg reading %s (pid %d)", self.url, proc.pid)
-            if self._stopped.is_set():  # stop() ran before _proc was set
+            if self._stopped_event.is_set():  # stop() ran before _proc was set
                 proc.terminate()
             threading.Thread(target=self._log_errors, args=(proc,), daemon=True).start()
             proc.wait()

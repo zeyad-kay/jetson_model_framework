@@ -1,5 +1,5 @@
 from server.coordinator import Coordinator, SessionError
-from server.log import get_logger
+from common.log import get_logger
 
 log = get_logger(__name__)
 
