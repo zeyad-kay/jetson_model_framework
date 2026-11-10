@@ -80,16 +80,19 @@ uses its default from the service's `config.py`. Restart the affected services a
 
 | Setting | `.env.example` | Meaning |
 |---|---|---|
+| `LLM_EXTRACT_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` | per-segment extraction model |
+| `LLM_AGGREGATE_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | end-of-session aggregation model |
+| `LLM_POLL_INTERVAL` | `0.5` | seconds between checks for new segments |
 | `LLM_DRAIN_IDLE` | `30` | seconds `segments.json` must stay unchanged after a session ends before extraction stops; must exceed the ASR's end-of-session drain, or the last segment is missed |
-| `LLM_LINK` | `false` | attach ATC / ICD-10-PCS codes to extracted entities; needs a code index in `llm_service/terminology/index` that isn't in the repo |
-| `LLM_EXTRACT_MODEL` | *(not set: `Qwen/Qwen3-4B-Instruct-2507`)* | per-segment extraction model |
-| `LLM_AGGREGATE_MODEL` | *(not set: `Qwen/Qwen2.5-7B-Instruct`)* | end-of-session aggregation model |
-| `LLM_POLL_INTERVAL` | *(not set: `0.5`)* | seconds between checks for new segments |
+| `LLM_LINK` | `true` | attach ATC / ICD-10-PCS codes to extracted entities (`llm_service/terminology_linker.py`); needs a code index in `llm_service/terminology/index` that isn't in the repo, so set it to `false` until the index is in place |
+| `LLM_DIR` | *(not set: the `llm_service/` folder)* | the service's folder; the code index is read from `<LLM_DIR>/terminology/index` |
+| `LLM_PROMPTS_DIR` | *(not set: `<LLM_DIR>/prompts`)* | prompts: `separated/` for extraction, `aggregate.txt` for aggregation, `_shared.yaml` for fragments both use |
 
 **Video** (`VIDEO_`)
 
 | Setting | `.env.example` | Meaning |
 |---|---|---|
+| `VIDEO_PROMPT` | `wound` | text prompt naming what SAM 3 segments |
 | `VIDEO_IDLE_TIMEOUT` | `10` | seconds without a new frame before the video counts as finished |
 | `VIDEO_DRAIN_IDLE` | `1` | seconds the video file must stop growing after a session ends before segmentation finishes |
 | `VIDEO_PROBE_TIMEOUT` | `60` | seconds to wait for the video stream to become readable |
@@ -162,7 +165,7 @@ current session's remaining input, then wait) and `ping` (health check, every
 ```
 server/          control port, session lifecycle, MediaMTX + ffmpeg recording
 asr_service/     streaming speech recognition and pause-based segmentation
-llm_service/     live ePCR extraction and aggregation (prompts/, terminology/)
+llm_service/     live ePCR extraction and aggregation (prompts/, terminology_linker.py, terminology/index)
 video_service/   SAM 3 video segmentation
 common/          shared WorkerService, bridge, config, logging, file helpers
 tests/           mock streaming client (client.py) and its Dockerfile
