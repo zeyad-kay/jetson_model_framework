@@ -6,30 +6,10 @@ import time
 from typing import Any
 from collections.abc import Generator
 
-
-class _SingletonMeta(type):
-    """Allows only one model instance across the whole VideoModel hierarchy.
-
-    Using a metaclass (rather than __new__) means __init__ runs only once,
-    so model weights are not reloaded on repeated construction.
-    """
-
-    _instance = None
-    _lock = threading.Lock()
-
-    def __call__(cls, *args, **kwargs):
-        with _SingletonMeta._lock:
-            if _SingletonMeta._instance is None:
-                _SingletonMeta._instance = super().__call__(*args, **kwargs)
-            elif not isinstance(_SingletonMeta._instance, cls):
-                raise RuntimeError(
-                    f"A {type(_SingletonMeta._instance).__name__} instance "
-                    f"already exists; cannot create {cls.__name__}"
-                )
-        return _SingletonMeta._instance
+from common.singleton import SingletonMeta
 
 
-class VideoModel(metaclass=_SingletonMeta):
+class VideoModel(metaclass=SingletonMeta):
     """Blueprint for video segmentation models. Subclasses override segment."""
 
     def __init__(self, prompt: str = "wound", pixel_format: str = "rgb24", idle_timeout: float = 10.0):
