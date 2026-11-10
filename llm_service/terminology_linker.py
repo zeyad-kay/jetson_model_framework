@@ -12,7 +12,7 @@ Each result carries {code, name, match, score, codeable, system}.
 The embedding index (<system>.emb.npy + <system>.codes.json) lives under terminology/index in this
 folder by default. Override with the CODE_INDEX_DIR env var or the index_dir argument.
 
-Import: from terminology_linker import Linker, rxnav_rxcui
+Import: from llm_service.terminology_linker import Linker, rxnav_rxcui
 """
 import json, os, re
 import numpy as np
@@ -23,20 +23,8 @@ from transformers.models.whisper.english_normalizer import EnglishTextNormalizer
 SAP = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-def _repo_root():
-    """The repo root — the dir holding config.yaml (code lives under src/epcr/). Override: PCR_ROOT."""
-    d = os.environ.get("PCR_ROOT") or HERE
-    for _ in range(6):
-        if os.path.isfile(os.path.join(d, "config.yaml")):
-            return d
-        parent = os.path.dirname(d)
-        if parent == d:
-            break
-        d = parent
-    return os.path.abspath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
-
 def default_index_dir():
-    return os.environ.get("CODE_INDEX_DIR") or os.path.join(_repo_root(), "terminology", "index")
+    return os.environ.get("CODE_INDEX_DIR") or os.path.join(HERE, "terminology", "index")
 
 # Exact-match normalization: the Whisper English text normalizer (lowercases, maps spelled-out
 # numbers to digits, standardizes units/spelling) — more matches land before the SapBERT fallback.

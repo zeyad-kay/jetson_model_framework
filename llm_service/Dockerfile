@@ -9,4 +9,6 @@ WORKDIR /app
 COPY common/ common/
 COPY llm_service/ llm_service/
 
+RUN pip install transformers accelerate
+
 CMD ["python", "-m", "llm_service.main"]
