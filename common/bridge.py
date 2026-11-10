@@ -35,7 +35,7 @@ class _Server(socketserver.ThreadingUnixStreamServer):
 class Bridge:
     """Listens on a Unix socket for JSON messages from other processes.
 
-    Messages are one JSON object per line, e.g. {"command": "stop"}. Each is
+    Messages are one JSON object per line, e.g. {"command": "end_session"}. Each is
     passed to on_message (called on a listener thread), and the returned dict
     is sent back as the reply.
 

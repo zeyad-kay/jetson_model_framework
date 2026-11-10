@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Union
@@ -58,6 +59,15 @@ class TimedTranscriptWriter:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+
+def write_json(path: Union[str, Path], obj) -> None:
+    """Writes obj as JSON, replacing the file atomically so readers never see a partial write."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def pcm_to_mp3(

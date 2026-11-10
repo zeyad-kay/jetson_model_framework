@@ -13,7 +13,7 @@ def setup_logging(
     log_file: Optional[Union[str, Path]] = None,
     also_stderr: bool = False,
 ) -> None:
-    """Configures the logger named root_name (a service's top-level package). Call once at startup.
+    """Configures the logger named root_name (a service's top-level package, e.g. "asr_service"). Call once at startup.
 
     Logs go to log_file (overwritten at each start) if given, else to stderr.
     With also_stderr they go to stderr as well. Repeated calls for the same
@@ -39,8 +39,11 @@ def setup_logging(
     _configured.add(root_name)
 
 
-def get_logger(root_name: str, name: str) -> logging.Logger:
-    """Returns a child of the root_name logger, e.g. get_logger("server", __name__) -> server.main."""
-    if name != root_name and not name.startswith(root_name + "."):
-        name = f"{root_name}.{name}"
+def get_logger(name: str) -> logging.Logger:
+    """Returns the logger for module `name`; pass __name__, e.g. get_logger(__name__) -> asr_service.service.
+
+    A module's logger is a child of its top-level package's logger, which
+    setup_logging() configures. A module run with `python -m` is named
+    "__main__", so name it explicitly instead, e.g. get_logger("asr_service.main").
+    """
     return logging.getLogger(name)
