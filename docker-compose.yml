@@ -37,7 +37,7 @@ services:
     build:
       context: .
       dockerfile: asr_service/Dockerfile
-    restart: unless-stopped
+    # restart: unless-stopped
     # SIGTERM makes the service finish the current session's remaining audio before exiting.
     stop_grace_period: 30s
     env_file:
@@ -86,6 +86,10 @@ services:
     env_file:
       - path: .env
         required: true
+    environment:
+      # Torch's pip cuDNN (9.20) mixes with the host-injected one (9.21) and fails with
+      # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
+      LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     volumes:
       - type: bind
         source: ./sessions
@@ -104,13 +108,13 @@ services:
       - type: bind
         source: ./llm_service
         target: /app/llm_service
-        read_only: true
+        # read_only: true
 
   video_service:
     build:
       context: .
       dockerfile: video_service/Dockerfile
-    restart: unless-stopped
+    # restart: unless-stopped
     env_file:
       - path: .env
         required: true
@@ -137,3 +141,23 @@ services:
         source: ./video_service
         target: /app/video_service
         read_only: true
+
+  # Mock streaming client (tests/client.py). Only started on demand, e.g.:
+  #   docker compose run --rm client --mode audio      # or --mode video / --mode both
+  client:
+    profiles: ["test"]
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    volumes:
+      - type: bind
+        source: ./tests/inputs
+        target: /tests/inputs
+        read_only: true
+      # Mounted over the baked-in copy so edits apply without a rebuild.
+      - type: bind
+        source: ./tests/client.py
+        target: /tests/client.py
+        read_only: true
+    # Host networking so the default --host 127.0.0.1 reaches the server on this machine.
+    network_mode: host
