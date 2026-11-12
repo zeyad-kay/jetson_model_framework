@@ -28,8 +28,8 @@ class Config:
     def load(cls, env_file: Optional[Union[str, Path]] = None) -> "Config":
         """Loads settings from a .env file, overridden by real environment variables.
 
-        The file is `env_file`, else $ENV_FILE, else ./.env. The directories (SESSIONS_DIR, LOGS_DIR, BRIDGE_DIR), LOG_LEVEL
-        and SAMPLING_RATE are shared; the rest are VIDEO_-prefixed.
+        The file is `env_file`, else $ENV_FILE, else ./.env. The directories (SESSIONS_DIR, LOGS_DIR, BRIDGE_DIR) and LOG_LEVEL
+        are shared; the rest are VIDEO_-prefixed.
         """
         get = env_getter(env_file)
         defaults = cls()

@@ -70,19 +70,14 @@ class Sam3(VideoModel):
         probe_timeout: float = 60.0,
         drain_idle: float = 1.0,
         alpha: float = 0.5,
-        hf_token: str | None = None,
     ):
         super().__init__(prompt, "rgb24", idle_timeout)
         # Heavy imports are deferred so importing this module stays cheap.
         import torch
-        from huggingface_hub import login
         from transformers import Sam3VideoModel, Sam3VideoProcessor
 
         self._torch = torch
         torch.set_grad_enabled(False)  # inference only; avoids building autograd graphs
-        token = hf_token or os.environ.get("HF_TOKEN")
-        if token:
-            login(token)
 
         self._device = device
         self._dtype = getattr(torch, dtype)
