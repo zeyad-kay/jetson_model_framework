@@ -174,22 +174,73 @@ services:
         target: /app/video_service
         read_only: true
 
-  # Mock streaming client (tests/client.py). Only started on demand, e.g.:
-  #   docker compose run --rm client --mode audio      # or --mode video / --mode both
-  client:
+  # Test clients, built from tests/Dockerfile. Only started on demand (profile "test").
+  # Mock streaming client (tests/e2e/main.py): streams through the server, e.g.:
+  #   docker compose run --rm e2e_test --mode audio    # or --mode video / --mode both
+  e2e_test:
     profiles: ["test"]
     build:
       context: ./tests
       dockerfile: Dockerfile
+    image: jetson_model_framework-tests
+    entrypoint: ["python3", "/tests/e2e/main.py"]
     volumes:
-      - type: bind
-        source: ./tests/inputs
-        target: /tests/inputs
-        read_only: true
       # Mounted over the baked-in copy so edits apply without a rebuild.
       - type: bind
-        source: ./tests/client.py
-        target: /tests/client.py
+        source: ./tests/e2e
+        target: /tests/e2e
         read_only: true
+      # The test media, shared with the integration tests.
+      - type: bind
+        source: ./tests/integration
+        target: /tests/integration
+        read_only: true
+      # Where the client writes its log (tests/integration/testlog.py).
+      - type: bind
+        source: ./logs/tests
+        target: /logs/tests
     # Host networking so the default --host 127.0.0.1 reaches the server on this machine.
     network_mode: host
+
+  # Per-service integration tests: each drives one service directly over its bridge
+  # socket, without the server, and checks its output. Needs the service running:
+  #   docker compose run --rm asr_test       # asr_service
+  #   docker compose run --rm video_test     # video_service
+  #   docker compose run --rm llm_extraction_test    # llm_extraction_service
+  #   docker compose run --rm llm_aggregation_test   # llm_aggregation_service
+  asr_test: &service_test
+    profiles: ["test"]
+    image: jetson_model_framework-tests
+    entrypoint: ["python3", "/tests/integration/asr/main.py"]
+    volumes:
+      - type: bind
+        source: ./tests/integration
+        target: /tests/integration
+        read_only: true
+      - type: bind
+        source: ./sessions
+        target: /sessions
+      - type: bind
+        source: ./run
+        target: /run/bridge
+      - type: bind
+        source: ./logs
+        target: /logs
+        read_only: true
+      # Writable, unlike the services' logs above: where the test writes its own log
+      # (tests/integration/testlog.py).
+      - type: bind
+        source: ./logs/tests
+        target: /logs/tests
+
+  video_test:
+    <<: *service_test
+    entrypoint: ["python3", "/tests/integration/video/main.py"]
+
+  llm_extraction_test:
+    <<: *service_test
+    entrypoint: ["python3", "/tests/integration/extraction/main.py"]
+
+  llm_aggregation_test:
+    <<: *service_test
+    entrypoint: ["python3", "/tests/integration/aggregation/main.py"]

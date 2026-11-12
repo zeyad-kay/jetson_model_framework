@@ -1,0 +1,3 @@
+*
+!integration/**/*.py
+!e2e/*.py

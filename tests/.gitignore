@@ -1,0 +1,6 @@
+# Test media and ground truth stay local: the video is over GitHub's 100 MB limit and the
+# extraction/aggregation data is a patient transcript. Only the empty folders are kept.
+integration/*/inputs/*
+integration/*/ground_truth/*
+!integration/*/inputs/.gitkeep
+!integration/*/ground_truth/.gitkeep
