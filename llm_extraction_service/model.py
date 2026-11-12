@@ -4,7 +4,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +14,9 @@ from common.singleton import SingletonMeta
 class LLMModel(metaclass=SingletonMeta):
     """Blueprint for LLM models. Subclasses override process.
 
-    Unlike the ASR and video models, the LLM service runs two models side by
-    side (an extractor and an aggregator), so there is one instance per class
-    rather than one across the whole hierarchy.
+    There is one instance per class rather than one across the whole hierarchy.
+    llm_aggregation_service/model.py has its own copy, so the two services
+    don't depend on each other.
     """
 
     _singleton_per_class = True
@@ -63,22 +63,67 @@ class LLMModel(metaclass=SingletonMeta):
         yield {}
 
 
-# ── Qwen ──────────────────────────────────────────────────────────────────────
+# ── Qwen extraction ──────────────────────────────────────────────────────────
 
-class QwenModel(LLMModel):
-    """A Qwen chat model loaded on the GPU with transformers; implements generate().
+class QwenExtractor(LLMModel):
+    """Stage 1 of the ePCR pipeline: per-segment entity extraction with a Qwen model.
 
-    Decoding is greedy, and Qwen3 hybrid models are kept out of thinking mode.
-    Subclasses override process. Also holds the helpers that QwenExtractor
-    and QwenAggregator share: prompt rendering, reply parsing, quote
-    normalization and reading a category out of an extraction record.
+    The model is loaded on the GPU with transformers; decoding is greedy, and
+    Qwen3 hybrid models are kept out of thinking mode.
+
+    process() follows the segments.json the ASR service writes to
+    <session>/transcript/ while it is still growing, and yields one
+    extraction record per segment as each segment appears. The model reports
+    what the segment says and the quotes it said it in; times are never taken
+    from the model, they come from matching each quote back to the segment's
+    word timestamps.
     """
 
+    CATEGORIES = ["medications", "interventions", "vital_signs", "mechanism_of_injury",
+                  "demographics", "general_notes"]
     # One entity per case, so stored as a single object rather than a list.
     OBJECT_CATEGORIES = {"mechanism_of_injury"}
 
-    def __init__(self, model_id: str, prompt_path: str, max_new_tokens: int = 4096, dtype: str = "bfloat16"):
+    def __init__(
+        self,
+        model_id: str,
+        prompt_path: str,
+        max_new_tokens: int = 4096,
+        dtype: str = "bfloat16",
+        link: bool = True,
+        link_threshold: float = 0.70,
+        rxnav: bool = False,
+        index_dir: str | None = None,
+        poll_interval: float = 0.5,
+        drain_idle: float = 5.0,
+    ):
+        """prompt_path is a directory (one call per .txt file in it, each
+        returning one or more categories) or a single file (one call returning
+        all of them). link attaches ATC (and with rxnav, RxNorm via the
+        network) codes to medications and ICD-10-PCS codes to interventions,
+        using the embedding index in index_dir; the aggregation service groups
+        medications by their ATC name, so leave it on when aggregating.
+
+        poll_interval is how often segments.json is re-read for new segments.
+        After finish(), process() ends once there are no new segments and the
+        file has not changed for drain_idle seconds, which gives the ASR
+        service time to write the segment it closes at the end of a session.
+        """
         super().__init__(model_id, prompt_path, max_new_tokens, dtype)
+        self._poll_interval = poll_interval
+        self._drain_idle = drain_idle
+        self._finish_event = threading.Event()
+        # Prompts and the linker load first, so a bad path fails before the weights load.
+        self._parse_failures = 0
+        self._prompts = self._load_prompts(prompt_path)
+        self._linker = None
+        self._rxnav = None
+        if link:
+            from llm_extraction_service.terminology_linker import Linker, rxnav_rxcui
+
+            self._linker = Linker(threshold=link_threshold, index_dir=index_dir)
+            self._rxnav = rxnav_rxcui if rxnav else None
+
         # Heavy imports are deferred so importing this module stays cheap.
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -154,62 +199,6 @@ class QwenModel(LLMModel):
         if isinstance(v, dict):
             return [v] if v else []
         return v if isinstance(v, list) else []
-
-
-# ── stage 1: extraction ───────────────────────────────────────────────────────
-
-class QwenExtractor(QwenModel):
-    """Stage 1 of the ePCR pipeline: per-segment entity extraction with a Qwen model.
-
-    process() follows the segments.json the ASR service writes to
-    <session>/transcript/ while it is still growing, and yields one
-    extraction record per segment as each segment appears. The model reports what the segment says and the quotes it said
-    it in; times are never taken from the model, they come from matching
-    each quote back to the segment's word timestamps.
-    """
-
-    CATEGORIES = ["medications", "interventions", "vital_signs", "mechanism_of_injury",
-                  "demographics", "general_notes"]
-
-    def __init__(
-        self,
-        model_id: str,
-        prompt_path: str,
-        max_new_tokens: int = 4096,
-        dtype: str = "bfloat16",
-        link: bool = True,
-        link_threshold: float = 0.70,
-        rxnav: bool = False,
-        index_dir: str | None = None,
-        poll_interval: float = 0.5,
-        drain_idle: float = 5.0,
-    ):
-        """prompt_path is a directory (one call per .txt file in it, each
-        returning one or more categories) or a single file (one call returning
-        all of them). link attaches ATC (and with rxnav, RxNorm via the
-        network) codes to medications and ICD-10-PCS codes to interventions,
-        using the embedding index in index_dir; QwenAggregator groups
-        medications by their ATC name, so leave it on when aggregating.
-
-        poll_interval is how often segments.json is re-read for new segments.
-        After finish(), process() ends once there are no new segments and the
-        file has not changed for drain_idle seconds, which gives the ASR
-        service time to write the segment it closes at the end of a session.
-        """
-        self._poll_interval = poll_interval
-        self._drain_idle = drain_idle
-        self._finish_event = threading.Event()
-        # Prompts and the linker load first, so a bad path fails before the weights load.
-        self._parse_failures = 0
-        self._prompts = self._load_prompts(prompt_path)
-        self._linker = None
-        self._rxnav = None
-        if link:
-            from llm_service.terminology_linker import Linker, rxnav_rxcui
-
-            self._linker = Linker(threshold=link_threshold, index_dir=index_dir)
-            self._rxnav = rxnav_rxcui if rxnav else None
-        super().__init__(model_id, prompt_path, max_new_tokens, dtype)
 
     @property
     def parse_failures(self) -> int:
@@ -378,177 +367,3 @@ class QwenExtractor(QwenModel):
         if best is None or best_score < 0.5:
             return None
         return words[tokens[best][1]].get("start")
-
-
-# ── stage 2: aggregation ──────────────────────────────────────────────────────
-
-class QwenAggregator(QwenModel):
-    """Stage 2 of the ePCR pipeline: merges QwenExtractor's records into one with a Qwen model.
-
-    Only medications go through the model, one call per drug: medications are
-    grouped by their ATC concept name (falling back to the extracted name when
-    unlinked) and the model turns each drug's mentions into events (single
-    dose or infusion, dose, rate changes). Times are rebuilt from the
-    extraction's transcript-matched times, never the model's. Every other
-    category is merged without the model: identical items are collapsed and
-    sorted by time.
-    """
-
-    PASSTHROUGH_CATEGORIES = ["interventions", "vital_signs", "mechanism_of_injury",
-                              "demographics", "general_notes"]
-    DETAIL_FIELDS = ["dose", "route", "body_site", "device", "value"]
-
-    def __init__(
-        self,
-        model_id: str,
-        prompt_path: str,
-        max_new_tokens: int = 4096,
-        dtype: str = "bfloat16",
-        intervention_vocab: Sequence[str] | None = (
-            "advanced airway", "mechanical ventilation", "oxygen therapy",
-            "chest decompression", "ultrasound", "cardiac monitoring",
-        ),
-    ):
-        """intervention_vocab keeps only interventions whose category is in it,
-        dropping ones the extractor invented outside that set; None keeps all."""
-        # The prompt loads first, so a bad path fails before the weights load.
-        if not os.path.isfile(prompt_path):
-            raise FileNotFoundError(f"aggregator prompt not found: {prompt_path}")
-        self._template = self._render(Path(prompt_path).read_text(), Path(prompt_path).parent / "_shared.yaml")
-        self._vocab = {v.strip().lower() for v in intervention_vocab} if intervention_vocab else None
-        self._raw_output = ""
-        super().__init__(model_id, prompt_path, max_new_tokens, dtype)
-
-    @property
-    def raw_output(self) -> str:
-        """The model's raw replies (one block per drug) for the last aggregate."""
-        return self._raw_output
-
-    def process(self, extractions_path: str) -> Generator[dict[str, Any], None, None]:
-        """Yield the aggregate of the extraction records in extractions_path (a JSON list).
-
-        The aggregate is {"medications": [events], "interventions": [...], ...,
-        "mechanism_of_injury": {...}}.
-        """
-        for _ in super().process(extractions_path):  # validates the path exists
-            pass
-
-        with open(extractions_path, encoding="utf-8") as f:
-            records = json.load(f)
-        yield self.aggregate(records)
-
-    def aggregate(self, records: list[dict]) -> dict[str, Any]:
-        """Aggregate QwenExtractor records (as yielded by its process())."""
-        by_drug = {}
-        for e in self._gather_meds(records):
-            by_drug.setdefault(e["name"], []).append(e)
-
-        medications, raws = [], []
-        for drug, entities in by_drug.items():
-            feed = [{k: e[k] for k in ("name", "time", "dose", "dose_unit", "route", "rate", "rate_unit", "quotes")}
-                    for e in entities]
-            prompt = self._template.replace("{entities}", json.dumps(feed, indent=1, ensure_ascii=False))
-            raw = self.generate([{"role": "user", "content": prompt}])
-            raws.append(f"===== {drug} =====\n{raw}")
-            obj = self._extract_json(raw) or {}
-            for event in obj.get("medications") or []:
-                if not isinstance(event, dict):
-                    continue
-                event.pop("rate_changes", None)  # rebuilt from the event's own quotes
-                self._derive_times_and_rates(event, entities)
-                event.setdefault("entity", drug)
-                event.setdefault("standard_name", drug)
-                medications.append(event)
-        self._raw_output = "\n\n".join(raws)
-
-        medications.sort(key=lambda ev: self._time_key(ev.get("start_time")))
-        result = {"medications": medications}
-        result.update(self._gather_passthrough(records))
-        return result
-
-    @staticmethod
-    def _time_key(t) -> float:
-        """Sort key for a time in seconds; missing times sort last."""
-        return float(t) if isinstance(t, (int, float)) else 1e9
-
-    @classmethod
-    def _gather_meds(cls, records: list[dict]) -> list[dict]:
-        """Every extracted medication, named by its ATC concept (when linked), in time order."""
-        entities = []
-        for rec in records:
-            seg = rec.get("segment")
-            for j, it in enumerate(rec.get("medications") or []):
-                if not isinstance(it, dict):
-                    continue
-                atc = it.get("atc") or {}
-                name = atc.get("name") if atc.get("code") else (it.get("standard_name") or it.get("entity") or "")
-                t = it.get("time", rec.get("start"))
-                entities.append({
-                    "id": f"m{seg}_{j}", "name": name, "time": t,
-                    "dose": it.get("dose", ""), "dose_unit": it.get("dose_unit", ""),
-                    "route": it.get("route", ""), "rate": it.get("rate") or [],
-                    "rate_unit": it.get("rate_unit", ""), "quotes": it.get("quotes") or [],
-                    "times": it.get("times") or ([t] if t is not None else []),
-                })
-        entities.sort(key=lambda e: cls._time_key(e["time"]))
-        return entities
-
-    @classmethod
-    def _derive_times_and_rates(cls, event: dict, entities: list[dict]) -> None:
-        """Fill an event's start/end time and rate changes from the entities it groups.
-
-        The entities are found by matching the event's (verbatim) quotes to
-        theirs, so every time is a transcript time.
-        """
-        quotes = {cls._normalize(q) for q in (event.get("quotes") or []) if isinstance(q, str)}
-        matched = [e for e in entities if any(cls._normalize(q) in quotes for q in e["quotes"])]
-        if not matched:
-            return
-        times = sorted({t for e in matched for t in e["times"] if t is not None}, key=cls._time_key)
-        if times:
-            event["start_time"] = times[0]
-            event["end_time"] = times[-1] if times[-1] != times[0] else None
-        event["rate_changes"] = [{"time": e["time"], "rate": r}
-                                 for e in matched for r in e["rate"] if str(r).strip()]
-        if not event.get("rate_unit"):
-            event["rate_unit"] = next((e["rate_unit"] for e in matched if e["rate_unit"]), "")
-
-    def _gather_passthrough(self, records: list[dict]) -> dict[str, Any]:
-        """The non-medication categories, identical items merged (quotes and times unioned), in time order."""
-        merged = {c: {} for c in self.PASSTHROUGH_CATEGORIES}  # category -> key -> merged item
-        for rec in records:
-            t0 = rec.get("start")
-            for c in self.PASSTHROUGH_CATEGORIES:
-                for it in self.items(rec, c):
-                    if not isinstance(it, dict):
-                        continue
-                    if (c == "interventions" and self._vocab is not None
-                            and str(it.get("category", "")).strip().lower() not in self._vocab):
-                        continue
-                    name = it.get("entity") or it.get("note") or ""
-                    fields = {d: it[d] for d in self.DETAIL_FIELDS if it.get(d)}
-                    fields.update({k: it[k] for k in ("standard_name", "category", "details") if it.get(k)})
-                    key = (name.strip().lower(), json.dumps(fields, sort_keys=True, ensure_ascii=False))
-                    t = it.get("time", t0)
-                    quotes = [q for q in (it.get("quotes") or []) if isinstance(q, str) and q.strip()]
-                    cur = merged[c].get(key)
-                    if cur is None:
-                        merged[c][key] = {"entity": name, "time": t,
-                                          "times": list(it.get("times") or ([t] if t is not None else [])),
-                                          "quotes": quotes, **fields}
-                        continue
-                    for q in quotes:
-                        if q not in cur["quotes"]:
-                            cur["quotes"].append(q)
-                    if t is not None and t not in cur["times"]:
-                        cur["times"].append(t)
-                    if self._time_key(t) < self._time_key(cur["time"]):
-                        cur["time"] = t
-
-        result = {}
-        for c in self.PASSTHROUGH_CATEGORIES:
-            items = sorted(merged[c].values(), key=lambda it: self._time_key(it["time"]))
-            for it in items:
-                it["times"].sort(key=self._time_key)
-            result[c] = (items[0] if items else {}) if c in self.OBJECT_CATEGORIES else items
-        return result

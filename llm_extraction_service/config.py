@@ -10,16 +10,15 @@ from common.config import env_getter, parse_bool, shared_paths
 class Config:
     # Root of the shared sessions volume; each session is <sessions_dir>/<session_id>/.
     sessions_dir: str = "/sessions"
-    bridge_path: str = "/run/bridge/llm_service.sock"
+    bridge_path: str = "/run/bridge/llm_extraction_service.sock"
     # The service's own directory (holds terminology/index) and its prompts directory
-    # (separated/ for extraction, aggregate.txt for aggregation, _shared.yaml for both).
+    # (separated/ for extraction, _shared.yaml for the fragments its prompts use).
     llm_dir: str = str(Path(__file__).resolve().parent)
     prompts_dir: str = str(Path(__file__).resolve().parent / "prompts")
-    # Hugging Face ids of the extraction (per segment) and aggregation (per session) models.
+    # Hugging Face id of the extraction model (one run per segment).
     extract_model: str = "Qwen/Qwen3-4B-Instruct-2507"
-    aggregate_model: str = "Qwen/Qwen2.5-7B-Instruct"
     # Attach ATC / ICD-10-PCS codes to extracted entities; needs the code index in
-    # llm_service/terminology/index. The aggregator groups medications by ATC name.
+    # llm_extraction_service/terminology/index. The aggregator service groups medications by ATC name.
     link: bool = True
     # How often segments.json is checked for new segments, in seconds.
     poll_interval: float = 0.5
@@ -35,18 +34,17 @@ class Config:
         """Loads settings from a .env file, overridden by real environment variables.
 
         The file is `env_file`, else $ENV_FILE, else ./.env. The directories (SESSIONS_DIR, LOGS_DIR, BRIDGE_DIR) and LOG_LEVEL
-        are shared; the rest are LLM_-prefixed.
+        are shared; the rest are LLM_EXTRACTION_-prefixed.
         """
         get = env_getter(env_file)
         defaults = cls()
-        llm_dir = get("LLM_DIR", str, defaults.llm_dir)
+        llm_dir = get("LLM_EXTRACTION_DIR", str, defaults.llm_dir)
         return cls(
-            **shared_paths(get, "llm_service", "llm", defaults),
+            **shared_paths(get, "llm_extraction_service", "llm_extraction", defaults),
             llm_dir=llm_dir,
-            prompts_dir=get("LLM_PROMPTS_DIR", str, os.path.join(llm_dir, "prompts")),
-            extract_model=get("LLM_EXTRACT_MODEL", str, defaults.extract_model),
-            aggregate_model=get("LLM_AGGREGATE_MODEL", str, defaults.aggregate_model),
-            link=get("LLM_LINK", parse_bool, defaults.link),
-            poll_interval=get("LLM_POLL_INTERVAL", float, defaults.poll_interval),
-            drain_idle=get("LLM_DRAIN_IDLE", float, defaults.drain_idle),
+            prompts_dir=get("LLM_EXTRACTION_PROMPTS_DIR", str, os.path.join(llm_dir, "prompts")),
+            extract_model=get("LLM_EXTRACTION_MODEL", str, defaults.extract_model),
+            link=get("LLM_EXTRACTION_LINK", parse_bool, defaults.link),
+            poll_interval=get("LLM_EXTRACTION_POLL_INTERVAL", float, defaults.poll_interval),
+            drain_idle=get("LLM_EXTRACTION_DRAIN_IDLE", float, defaults.drain_idle),
         )

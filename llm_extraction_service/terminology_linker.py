@@ -10,9 +10,10 @@ Each result carries {code, name, match, score, codeable, system}.
   interventions -> ICD-10-PCS (local)
 
 The embedding index (<system>.emb.npy + <system>.codes.json) lives under terminology/index in this
-folder by default. Override with the CODE_INDEX_DIR env var or the index_dir argument.
+folder by default. Override with the index_dir argument (the service passes
+<LLM_EXTRACTION_DIR>/terminology/index).
 
-Import: from llm_service.terminology_linker import Linker, rxnav_rxcui
+Import: from llm_extraction_service.terminology_linker import Linker, rxnav_rxcui
 """
 import json, os, re
 import numpy as np
@@ -24,7 +25,7 @@ SAP = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def default_index_dir():
-    return os.environ.get("CODE_INDEX_DIR") or os.path.join(HERE, "terminology", "index")
+    return os.path.join(HERE, "terminology", "index")
 
 # Exact-match normalization: the Whisper English text normalizer (lowercases, maps spelled-out
 # numbers to digits, standardizes units/spelling) — more matches land before the SapBERT fallback.
@@ -39,7 +40,7 @@ class Linker:
         idx = index_dir or default_index_dir()
         if not os.path.isdir(idx):
             raise SystemExit(f"code index not found at {idx}. Place the embedding index there "
-                             f"or set CODE_INDEX_DIR. Needed only for --link.")
+                             f"(<LLM_EXTRACTION_DIR>/terminology/index), or set LLM_EXTRACTION_LINK=false.")
         self.dev = "cuda" if torch.cuda.is_available() else "cpu"
         self.tok = AutoTokenizer.from_pretrained(SAP)
         self.model = AutoModel.from_pretrained(SAP).to(self.dev).eval()

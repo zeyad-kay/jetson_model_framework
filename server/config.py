@@ -12,7 +12,8 @@ class Config:
     # Bridge sockets of the services to health-check (the file stem is the name).
     services: tuple[str, ...] = (
         "/run/bridge/asr_service.sock",
-        "/run/bridge/llm_service.sock",
+        "/run/bridge/llm_extraction_service.sock",
+        "/run/bridge/llm_aggregation_service.sock",
         "/run/bridge/video_service.sock",
     )
     # Root of the shared volume that holds one folder per session.
@@ -48,7 +49,7 @@ class Config:
         shared.pop("bridge_path")  # the server has no bridge socket of its own
         bridge_dir = get("BRIDGE_DIR", str, None)
         services = (
-            tuple(f"{bridge_dir}/{name}.sock" for name in ("asr_service", "llm_service", "video_service"))
+            tuple(f"{bridge_dir}/{name}.sock" for name in ("asr_service", "llm_extraction_service", "llm_aggregation_service", "video_service"))
             if bridge_dir else defaults.services
         )
         return cls(
