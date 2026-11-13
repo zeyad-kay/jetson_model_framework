@@ -6,3 +6,5 @@ run
 *.log
 mediamtx
 logs
+artifacts
+old_epcr

@@ -174,6 +174,36 @@ services:
         target: /app/video_service
         read_only: true
 
+  # Web dashboard of a session's ePCR timeline (dashboard/), read-only over the sessions folder.
+  # Open http://<jetson-ip>:${DASHBOARD_PORT:-8080}/ in a browser.
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    volumes:
+      - type: bind
+        source: ./sessions
+        target: ${SESSIONS_DIR:-/sessions}
+        read_only: true
+      - type: bind
+        source: ./logs
+        target: ${LOGS_DIR:-/logs}
+      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
+      - type: bind
+        source: ./common
+        target: /app/common
+        read_only: true
+      - type: bind
+        source: ./dashboard
+        target: /app/dashboard
+        read_only: true
+    # Host networking, like the server, so the page is reachable at the Jetson's address.
+    network_mode: host
+
   # Test clients, built from tests/Dockerfile. Only started on demand (profile "test").
   # Mock streaming client (tests/e2e/main.py): streams through the server, e.g.:
   #   docker compose run --rm e2e_test --mode audio    # or --mode video / --mode both
