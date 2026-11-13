@@ -8,7 +8,7 @@ the transcript, and segment the video, all live while the session is recorded.
 
 ### Prerequisites
 
-- **A Jetson with JetPack** (developed on L4T R39) and about **100 GB of free disk**: the three
+- **A Jetson with JetPack** (developed on L4T R39) and about **100 GB of free disk**: the four
   model images are built on NVIDIA's PyTorch and NeMo images, over 30 GB each.
 - **Docker with Compose v2 and the NVIDIA Container Toolkit**, with `nvidia` as Docker's
   **default runtime**. `docker-compose.yml` doesn't request GPUs itself, so the model services
@@ -33,7 +33,7 @@ the transcript, and segment the video, all live while the session is recorded.
 
 ```bash
 cp .env.example .env          # then set HF_TOKEN=hf_... in .env
-mkdir -p sessions logs run    # bind-mounted into the containers; must exist before starting
+mkdir -p sessions logs/tests run   # bind-mounted into the containers; must exist before starting
 ```
 
 `.env` is required by `docker-compose.yml` and read by every service. `HF_TOKEN` is the only
@@ -45,7 +45,7 @@ uses its default from the service's `config.py`. Restart the affected services a
 
 | Setting | `.env.example` | Meaning |
 |---|---|---|
-| `HF_TOKEN` | *(empty)* | Hugging Face token; its account needs access to `facebook/sam3` |
+| `HF_TOKEN` | *(empty)* | Hugging Face token; its account needs access to `facebook/sam3`. No service reads it: Compose puts it in every container's environment, where the Hugging Face library picks it up when downloading weights |
 | `SAMPLING_RATE` | `16000` | audio sample rate (Hz) of the recording; read by the server and the ASR |
 | `LOG_LEVEL` | `INFO` | log level of every service |
 | `SESSIONS_DIR` | `/sessions` | session folders, inside the containers (`./sessions` on the host) |
@@ -76,17 +76,25 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `ASR_POLL_INTERVAL` | `0.05` | seconds between checks for new audio |
 | `ASR_SEGMENT_PAUSE` | `20` | seconds of silence that close a transcript segment |
 
-**LLM** (`LLM_`)
+**LLM extraction** (`LLM_EXTRACTION_`)
 
 | Setting | `.env.example` | Meaning |
 |---|---|---|
-| `LLM_EXTRACT_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` | per-segment extraction model |
-| `LLM_AGGREGATE_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | end-of-session aggregation model |
-| `LLM_POLL_INTERVAL` | `0.5` | seconds between checks for new segments |
-| `LLM_DRAIN_IDLE` | `30` | seconds `segments.json` must stay unchanged after a session ends before extraction stops; must exceed the ASR's end-of-session drain, or the last segment is missed |
-| `LLM_LINK` | `true` | attach ATC / ICD-10-PCS codes to extracted entities (`llm_service/terminology_linker.py`); needs a code index in `llm_service/terminology/index` that isn't in the repo, so set it to `false` until the index is in place |
-| `LLM_DIR` | *(not set: the `llm_service/` folder)* | the service's folder; the code index is read from `<LLM_DIR>/terminology/index` |
-| `LLM_PROMPTS_DIR` | *(not set: `<LLM_DIR>/prompts`)* | prompts: `separated/` for extraction, `aggregate.txt` for aggregation, `_shared.yaml` for fragments both use |
+| `LLM_EXTRACTION_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` | per-segment extraction model |
+| `LLM_EXTRACTION_POLL_INTERVAL` | `0.5` | seconds between checks for new segments |
+| `LLM_EXTRACTION_DRAIN_IDLE` | `30` | seconds `segments.json` must stay unchanged after a session ends before extraction stops; must exceed the ASR's end-of-session drain, or the last segment is missed |
+| `LLM_EXTRACTION_LINK` | `true` | attach ATC / ICD-10-PCS codes to extracted entities (`llm_extraction_service/terminology_linker.py`); needs a code index in `llm_extraction_service/terminology/index` that isn't in the repo, so set it to `false` until the index is in place |
+| `LLM_EXTRACTION_DIR` | *(not set: the `llm_extraction_service/` folder)* | the service's folder; the code index is read from `<LLM_EXTRACTION_DIR>/terminology/index` |
+| `LLM_EXTRACTION_PROMPTS_DIR` | *(not set: `<LLM_EXTRACTION_DIR>/prompts`)* | prompts: `separated/` (one model call per file), `_shared.yaml` for fragments they use |
+
+**LLM aggregation** (`LLM_AGGREGATION_`)
+
+| Setting | `.env.example` | Meaning |
+|---|---|---|
+| `LLM_AGGREGATION_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | aggregation model, run each time a segment is extracted |
+| `LLM_AGGREGATION_POLL_INTERVAL` | `0.5` | seconds between checks for new extraction records |
+| `LLM_AGGREGATION_DRAIN_TIMEOUT` | `600` | after a session ends, the aggregator waits for the extraction service to mark its extractions complete (`structured/extractions.done`); without that mark it gives up once `extractions.json` has been unchanged this many seconds |
+| `LLM_AGGREGATION_PROMPT` | *(not set: `llm_aggregation_service/prompts/aggregate.txt`)* | the aggregation prompt |
 
 **Video** (`VIDEO_`)
 
@@ -99,13 +107,21 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `VIDEO_ALPHA` | `0.5` | opacity of the mask overlay, 0–1 |
 | `VIDEO_POLL_INTERVAL` | `0.05` | seconds between checks for new frames |
 
+**Dashboard** (`DASHBOARD_`)
+
+| Setting | `.env.example` | Meaning |
+|---|---|---|
+| `DASHBOARD_HOST` | `0.0.0.0` | address the dashboard's web page is served on |
+| `DASHBOARD_PORT` | `8080` | its port |
+| `DASHBOARD_LIVE_WINDOW` | `120` | a session shows as live while it hasn't ended and one of its files changed within this many seconds |
+
 ### 2. Build and start
 
 ```bash
 docker compose build          # first build downloads the NVIDIA base images; takes a while
-docker compose build client   # the mock test client (profile "test", so built by name)
-docker compose up -d          # starts the four services, not the client
-docker compose ps             # server, asr_service, llm_service, video_service: all "Up"
+docker compose build e2e_test # the test image (profile "test", so built by name)
+docker compose up -d          # starts the six services, not the test clients
+docker compose ps             # server, the four model services and the dashboard: all "Up"
 docker compose logs -f        # wait for "waiting for a session" from each model service
 ```
 
@@ -121,7 +137,8 @@ Jetson's address on ports **8000** (control) and **8554** (RTSP). Code under `co
 service folder is mounted into the containers, so `docker compose restart <service>` picks up
 edits; Dockerfile changes need `docker compose build` first.
 
-To check the whole pipeline end to end, see [Testing the live stack](#testing-the-live-stack).
+To check the whole pipeline end to end, see [Testing the live stack](#testing-the-live-stack);
+to test one model service on its own, see [Integration tests](#integration-tests).
 
 ### 3. Stop
 
@@ -132,7 +149,8 @@ docker compose down
 ## How it works
 
 ```
-phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──▶ asr_service / llm_service / video_service
+phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──▶ asr_service / llm_extraction_service /
+  │                           │                                 llm_aggregation_service / video_service
   │                           │
   └──RTSP :8554──▶ MediaMTX ──┴──▶ ffmpeg ──▶ sessions/<id>/audio/audio.pcm, video/video.ts
 ```
@@ -151,8 +169,10 @@ phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──�
 |---|---|---|---|
 | `server` | the client's commands and RTSP stream | `audio/audio.pcm` → `audio.mp3`, `video/video.ts` → `video.mp4` | none (CPU-only; runs MediaMTX) |
 | `asr_service` | `audio/audio.pcm` | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | `nvidia/nemotron-3.5-asr-streaming-0.6b` |
-| `llm_service` | `transcript/segments.json` | `structured/extractions.json`, then `aggregate.json` | `Qwen/Qwen3-4B-Instruct-2507` (extract), `Qwen/Qwen2.5-7B-Instruct` (aggregate) |
+| `llm_extraction_service` | `transcript/segments.json` | `structured/extractions.json`, then `extractions.done` when the session's last segment is extracted | `Qwen/Qwen3-4B-Instruct-2507` |
+| `llm_aggregation_service` | `structured/extractions.json` | `structured/aggregate.json` and `aggregates/<segment>.json`, re-aggregated each time a segment is extracted | `Qwen/Qwen2.5-7B-Instruct` |
 | `video_service` | `video/video.ts` | `video/overlay.mp4` | `facebook/sam3` |
+| `dashboard` | `structured/aggregate.json` (read-only) | a web page on port 8080 | none (CPU-only) |
 
 The server drives the services over unix sockets in `BRIDGE_DIR` with three commands:
 `queue_session` (work on a session, ending the current one first), `end_session` (finish the
@@ -163,42 +183,79 @@ current session's remaining input, then wait) and `ping` (health check, every
 ## Layout
 
 ```
-server/          control port, session lifecycle, MediaMTX + ffmpeg recording
-asr_service/     streaming speech recognition and pause-based segmentation
-llm_service/     live ePCR extraction and aggregation (prompts/, terminology_linker.py, terminology/index)
-video_service/   SAM 3 video segmentation
-common/          shared WorkerService, bridge, config, logging, file helpers
-tests/           mock streaming client (client.py) and its Dockerfile
-sessions/        one folder per session (created at runtime)
-logs/            one log file per service
+server/                   control port, session lifecycle, MediaMTX + ffmpeg recording
+asr_service/              streaming speech recognition and pause-based segmentation
+llm_extraction_service/   live ePCR extraction, per segment (prompts/, terminology_linker.py, terminology/index)
+llm_aggregation_service/  live ePCR aggregation of the segments extracted so far (prompts/aggregate.txt)
+video_service/            SAM 3 video segmentation
+dashboard/                web dashboard of a session's ePCR timeline (server.py, static/)
+common/                   shared WorkerService, bridge, config, logging, file helpers
+tests/                    mock streaming client (e2e/), per-service integration tests (integration/), their Dockerfile
+sessions/                 one folder per session (created at runtime)
+logs/                     one log file per service
 ```
+
+## Dashboard
+
+The `dashboard` service serves a web page of a session's ePCR timeline at
+`http://<jetson-ip>:8080/` (`DASHBOARD_PORT`). It reads `structured/aggregate.json`, the
+aggregation service's output, and re-reads it every 2 s, so the page follows a session as it
+is recorded. It only reads the sessions folder, and the page loads nothing from the internet.
+
+- **Header:** sex and age (`demographics`), the mechanism of injury with when it was reported
+  and its first quote, and whether the session is **Live** or **Ended**. A session has ended
+  once the server has exported its `audio.mp3` or `video.mp4`, or the extraction service has
+  written `extractions.done`; otherwise it is live while its files keep changing
+  (`DASHBOARD_LIVE_WINDOW`).
+- **Injuries:** the general notes that mention an injury (a keyword match on words like
+  *injury*, *trauma*, *laceration*, *swelling*, *pain*), numbered. Clicking one finds it on
+  the timeline. The pipeline has no structured injury data yet, so there is no body map.
+- **Patient timeline:** three lanes on one time axis. *Patient history* is the general notes,
+  *Medications* the aggregated medication events (an infusion is a bar from start to end, with
+  a dot at each rate change), *Interventions* the interventions. Times are elapsed from the
+  start of the recording. Hover or focus an event for its details, every time it was
+  mentioned and the transcript quotes; a lane labels at most three rows of events, and the
+  rest show as dots with the same details.
+- **Controls:** the session picker (by default the newest live session, else the newest with
+  an aggregate; `?session=<id>` in the URL picks one), the visible span (10 min, 20 min, 1 h,
+  All), and **Follow**, which keeps the latest events in view and turns off when you scroll
+  back.
+
+The server is `dashboard/server.py` (standard library only); the page is `dashboard/static/`.
+Its JSON is also available directly: `GET /api/sessions` lists the sessions, and
+`GET /api/sessions/<id>` returns one session with its aggregate.
 
 ## Testing the live stack
 
-`tests/client.py` is a mock client that streams test media to the server like the phone app
-would. It starts a session, publishes the `.mp3` and/or `.mp4` in `tests/inputs/` to the
-server's RTSP URL in real time, then stops the session. It runs in its own container
-(`tests/Dockerfile`), because the Jetson's own ffmpeg can't publish RTSP or decode MP3.
+`tests/e2e/main.py` is a mock client that streams test media to the server like the phone app
+would. It starts a session, publishes `tests/integration/asr/inputs/audio.mp3` and/or
+`tests/integration/video/inputs/video.mp4` (the integration tests' media) to the server's RTSP
+URL in real time, then stops the session. It runs in its own container (`tests/Dockerfile`),
+because the Jetson's own ffmpeg can't publish RTSP or decode MP3.
 
-Start the stack and build the client first ([Setup](#setup), step 2).
+Unlike the [integration tests](#integration-tests), this goes through the server to every
+service at once, so it is the one test of the handoffs between them (ASR to extraction to
+aggregation). Start the stack and build the test image first ([Setup](#setup), step 2).
 
 ### Run the client
 
 ```bash
-docker compose run --rm client --mode both    # .mp4 video + .mp3 audio (default)
-docker compose run --rm client --mode audio   # only the .mp3
-docker compose run --rm client --mode video   # only the .mp4
+docker compose run --rm e2e_test --mode both    # .mp4 video + .mp3 audio (default)
+docker compose run --rm e2e_test --mode audio   # only the .mp3
+docker compose run --rm e2e_test --mode video   # only the .mp4
 ```
 
-Each run starts a session (printing its `session_id`; the client warns if a service didn't
-accept it), streams in real time (each file
-plays to its own end, so `both` lasts as long as the longer file), waits 2 s (`--linger`)
-and stops the session. Ctrl-C stops early and still ends the session cleanly. The server
+Each run starts a session (logging its `session_id`; the client warns if a service didn't
+accept it), streams in real time (each file plays to its own end, so `both` lasts as long as
+the longer file), waits 2 s (`--linger`) and stops the session. Ctrl-C stops early and still ends the session cleanly. The server
 takes one client and one session at a time, so run one at a time.
 
-`--dry-run` prints the ffmpeg command without contacting the server; `--help` lists every
-option. `tests/client.py` and `tests/inputs/` are mounted into the container, so edits to
-them need no rebuild.
+`--audio-file` and `--video-file` stream other media (paths inside the container); `--dry-run`
+prints the ffmpeg command without contacting the server; `--help` lists every option.
+`tests/e2e/` and `tests/integration/` are mounted into the container (at `/tests/e2e/` and
+`/tests/integration/`), so edits to the client or the media need no rebuild.
+The client's output, ffmpeg's included, goes to `logs/tests/e2e-<YYYYmmdd-HHMMSS>.log`, not the
+console, which only shows the log's path; `--test-log-dir` (or `$TEST_LOG_DIR`) puts it elsewhere.
 
 ### Check the results
 
@@ -209,7 +266,7 @@ Everything lands in `sessions/<session_id>/`:
 | `audio/audio.pcm` grows | `audio/audio.mp3` |
 | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | — |
 | `video/video.ts` grows, plus the video service's output | `video/video.mp4` |
-| `structured/extractions.json`, updated as each segment closes | `structured/aggregate.json`, about 30 s later (`LLM_DRAIN_IDLE`) |
+| `structured/extractions.json`, updated as each segment closes; `aggregate.json` and `aggregates/<segment>.json` after each extraction | the last segment's extraction and aggregate, about 30 s later (`LLM_EXTRACTION_DRAIN_IDLE`), then `extractions.done` |
 
 ```bash
 ls -R sessions/<session_id>
@@ -222,16 +279,17 @@ The ASR closes a segment only after 20 s of silence (`ASR_SEGMENT_PAUSE`), so
 
 ### Shorter runs with clips
 
-The full inputs take minutes per run. To cut 20 s clips (using the client image's ffmpeg)
+The full inputs take minutes per run. To cut 20 s clips (using the test image's ffmpeg)
 and stream those instead:
 
 ```bash
 mkdir -p clips
-docker compose run --rm -v "$PWD/clips:/out" --entrypoint sh client -c \
-  'ffmpeg -v error -y -i inputs/audio.mp3 -t 20 -c copy /out/audio.mp3 &&
-   ffmpeg -v error -y -i inputs/video.mp4 -t 20 -c copy /out/video.mp4'
+docker compose run --rm -v "$PWD/clips:/out" --entrypoint sh e2e_test -c \
+  'ffmpeg -v error -y -i integration/asr/inputs/audio.mp3 -t 20 -c copy /out/audio.mp3 &&
+   ffmpeg -v error -y -i integration/video/inputs/video.mp4 -t 20 -c copy /out/video.mp4'
 
-docker compose run --rm -v "$PWD/clips:/tests/inputs:ro" client --mode both
+docker compose run --rm -v "$PWD/clips:/clips:ro" e2e_test --mode both \
+  --audio-file /clips/audio.mp3 --video-file /clips/video.mp4
 ```
 
 ### From another machine
@@ -239,5 +297,87 @@ docker compose run --rm -v "$PWD/clips:/tests/inputs:ro" client --mode both
 On the Jetson's network, with Python 3 and a full ffmpeg installed:
 
 ```bash
-python tests/client.py --host <jetson-ip> --mode both
+python tests/e2e/main.py --host <jetson-ip> --mode both
 ```
+
+It uses only the standard library and finds the media under `tests/integration/` itself, so
+run it from a checkout of this repository (or pass `--audio-file` / `--video-file`).
+
+## Integration tests
+
+Each model service has an integration test in `tests/integration/<test>/`: `main.py` (the test),
+`inputs/` (what it feeds the service) and `ground_truth/` (what the output is compared
+against). A test drives one service directly over its bridge socket, without the server: it
+creates a session folder the way the server does, queues it on the service, writes the
+service's input into it as it would arrive live, ends the session, waits for the service to
+finish and checks its output. Shared code is in `tests/integration/harness.py`.
+
+| Command | Service | Feeds it | Checks |
+|---|---|---|---|
+| `docker compose run --rm asr_test` | `asr_service` | `asr/inputs/audio.mp3`, in real time | transcript word error rate against the ground truth (at most `--max-wer`, 0.15 by default) and segment boundaries |
+| `docker compose run --rm video_test` | `video_service` | `video/inputs/video.mp4`, in real time | `video/overlay.mp4` was written |
+| `docker compose run --rm llm_extraction_test` | `llm_extraction_service` | `extraction/inputs/segments.json`, one segment every 5 s (`--interval`) | one well-formed record per segment, times inside their segment, `extractions.done`; then a score report against `extraction/ground_truth/` |
+| `docker compose run --rm llm_aggregation_test` | `llm_aggregation_service` | `aggregation/inputs/<segment>.json`, one record at a time, each after the previous one's aggregate | an aggregate per segment, equal to `aggregation/ground_truth/<segment>.json` outside medications; medication events well formed |
+
+### Run a test
+
+```bash
+docker compose build e2e_test                  # once: builds the test image every test uses
+docker compose up -d llm_extraction_service    # the service under test
+docker compose logs -f llm_extraction_service  # wait for "waiting for a session"
+docker compose run --rm llm_extraction_test
+```
+
+The test services reuse the image the `e2e_test` build makes, so rebuild it after changing
+`tests/Dockerfile`; `tests/integration/` is mounted into the container, so edits to the tests
+need no rebuild. The server doesn't need to be running, but don't run a test during a real
+session: queueing the test's session ends the service's current one.
+
+A test exits non-zero if any check fails. Its output goes to a log file, not the console (which
+only shows the file's path): `logs/tests/<service>-<YYYYmmdd-HHMMSS>.log`, one per run, with each
+check as `[PASS]` or `[FAIL]`, the score reports and ffmpeg's warnings. `--test-log-dir` (or
+`$TEST_LOG_DIR`) puts it elsewhere. The logger is in `tests/integration/testlog.py`. Its
+session stays in `sessions/it-<id>/` for inspection. Model weights are downloaded on the
+service's first start, so allow for that before the first run.
+
+### Options
+
+Options go after the test's name, e.g. `docker compose run --rm llm_extraction_test --interval 0`.
+
+| Test | Option | Effect |
+|---|---|---|
+| all | `--dry-run` | print what would be fed to the service, without contacting it |
+| all | `--test-log-dir <dir>` | where to write the run's log (default: `logs/tests`) |
+| all | `--timeout <s>` | how long to wait for the service to finish after the session ends |
+| all | `--help` | every option |
+| `asr_test` | `--max-wer <x>` | the highest word error rate that passes |
+| `asr_test` | `--audio-file <path>` | another clip (skips the ground-truth checks) |
+| `video_test` | `--video-file <path>` | another clip |
+| `llm_extraction_test` | `--interval <s>` | seconds between segments; `0` writes them all at once |
+| `llm_extraction_test` | `--score /sessions/<id>` | only log the score report for an earlier session; the service isn't contacted |
+| `llm_extraction_test` | `--ground-truth <dir>` | score against other ground truth |
+| `llm_aggregation_test` | `--no-lockstep --interval <s>` | write records on a timer instead of waiting for each aggregate; the aggregator then skips the lists it falls behind on |
+
+Paths are inside the test container, where `tests/integration/` is at `/tests/integration/`
+and the sessions folder at `/sessions/`.
+
+### The extraction score
+
+The model's extractions aren't expected to reproduce the ground truth exactly, so the score is
+a report and never fails the test. A model item matches a ground-truth item of the same
+segment and category when their quotes share at least half their words (one to one, best
+overlaps first); an item without quotes matches one with the same entity instead. For each
+category it prints the ground-truth and model counts, the matches, precision and recall, and
+how often matched items agree on the entity and on the value (vital signs, demographics) or
+dose (medications).
+
+### Ground truth
+
+`aggregation/inputs/` is a copy of `extraction/ground_truth/`: the aggregation test is fed the
+records the extraction service should produce. Copy them again after editing the extraction
+ground truth. The aggregation test compares every category except medications exactly,
+because only medications go through the model; the rest is merged deterministically.
+
+The integration tests check one service each. The handoff between the services (ASR to
+extraction to aggregation) is only exercised by the full stack: see
+[Testing the live stack](#testing-the-live-stack).
