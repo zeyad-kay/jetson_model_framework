@@ -19,8 +19,10 @@ class Config:
     # Lookahead tokens of the streaming model (higher = more accurate, more latency).
     num_lookahead_tokens: int = 6
     poll_interval: float = 0.05
-    # A pause of at least this many seconds starts a new transcript segment.
+    # A pause of at least this many seconds of audio ends a transcript segment.
     segment_pause: float = 20.0
+    # A sentence end ends a transcript segment once it holds at least this many seconds of audio.
+    segment_min_length: float = 20.0
     log_level: str = "INFO"
     log_file: Optional[str] = None
 
@@ -43,4 +45,5 @@ class Config:
             num_lookahead_tokens=get("ASR_NUM_LOOKAHEAD_TOKENS", int, defaults.num_lookahead_tokens),
             poll_interval=get("ASR_POLL_INTERVAL", float, defaults.poll_interval),
             segment_pause=get("ASR_SEGMENT_PAUSE", float, defaults.segment_pause),
+            segment_min_length=get("ASR_SEGMENT_MIN_LENGTH", float, defaults.segment_min_length),
         )

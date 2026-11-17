@@ -5,14 +5,24 @@ import threading
 from pathlib import Path
 from typing import Optional, Union
 
+# A word that ends a sentence: ends in . ! or ?, maybe followed by closing quotes or brackets.
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*$")
+# Words ending in a period that don't end a sentence.
+_ABBREVIATIONS = {"dr.", "mr.", "mrs.", "ms.", "st.", "vs.", "e.g.", "i.e.", "approx.", "no."}
+
 
 class SegmentTracker:
     """Groups timestamped transcript fragments into segments of words, live.
 
-    A segment ends at a pause of at least min_pause seconds of audio with no
-    text. Because silence produces no fragments, tick() is how the tracker
-    learns the audio position advanced and closes the segment without waiting
-    for the next fragment.
+    A segment ends either
+      - at the end of a sentence (a word ending in . ! or ?), once the segment
+        holds at least min_length seconds of audio, or
+      - at a pause of at least min_pause seconds of audio with no text.
+    The end of a sentence is only known once the next whitespace arrives (a
+    fragment like "3." may go on as "3.5"), so the segment closes then. Because
+    silence produces no fragments, tick() is how the tracker learns the audio
+    position advanced and closes the segment without waiting for the next
+    fragment.
 
     Only closed segments are written to the JSON file, as a list of
     {"segment_id": n, "start", "end", "text": [{"word", "start", "end"}]},
@@ -28,9 +38,10 @@ class SegmentTracker:
     to its last word's end. Pauses are still judged on the raw stamps.
     """
 
-    def __init__(self, path: Union[str, Path], min_pause: float, chunk_seconds: float):
+    def __init__(self, path: Union[str, Path], min_pause: float, min_length: float, chunk_seconds: float):
         self.path = Path(path)
         self.min_pause = min_pause
+        self.min_length = min_length
         self.chunk_seconds = chunk_seconds
         self._segments = []
         self._open = False  # whether the last segment (not written yet) can still grow
@@ -94,6 +105,8 @@ class SegmentTracker:
     def _feed(self, piece: str, start: float, end: float) -> None:
         if piece.isspace():
             self._boundary = True
+            if self._ends_long_sentence():
+                self._close_open()
             return
         if self._word is not None and not self._boundary:
             self._word["word"] += piece
@@ -108,6 +121,15 @@ class SegmentTracker:
             self._segments[-1]["text"].append(self._word)
             self._boundary = False
         self._segments[-1]["end"] = end
+
+    def _ends_long_sentence(self) -> bool:
+        """Whether the open segment's last word ends a sentence, and the segment is min_length long."""
+        w = self._word
+        if not self._open or w is None:
+            return False
+        word = w["word"].lower()
+        return (bool(_SENTENCE_END.search(word)) and word not in _ABBREVIATIONS
+                and w["end"] - self._segments[-1]["start"] >= self.min_length)
 
     def _close_open(self) -> None:
         if self._open:

@@ -75,6 +75,7 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `ASR_NUM_LOOKAHEAD_TOKENS` | `6` | lookahead of the streaming model (higher = more accurate, more latency) |
 | `ASR_POLL_INTERVAL` | `0.05` | seconds between checks for new audio |
 | `ASR_SEGMENT_PAUSE` | `20` | seconds of silence that close a transcript segment |
+| `ASR_SEGMENT_MIN_LENGTH` | `20` | seconds of audio a segment needs before the end of a sentence closes it |
 
 **LLM extraction** (`LLM_EXTRACTION_`)
 
@@ -184,7 +185,7 @@ current session's remaining input, then wait) and `ping` (health check, every
 
 ```
 server/                   control port, session lifecycle, MediaMTX + ffmpeg recording
-asr_service/              streaming speech recognition and pause-based segmentation
+asr_service/              streaming speech recognition, segmented at sentence ends and pauses
 llm_extraction_service/   live ePCR extraction, per segment (prompts/, terminology_linker.py, terminology/index)
 llm_aggregation_service/  live ePCR aggregation of the segments extracted so far (prompts/aggregate.txt)
 video_service/            SAM 3 video segmentation
@@ -274,7 +275,8 @@ tail -f sessions/<session_id>/transcript/transcript.txt   # live transcript
 tail -f logs/*.log                                        # service logs
 ```
 
-The ASR closes a segment only after 20 s of silence (`ASR_SEGMENT_PAUSE`), so
+The ASR closes a segment at the first sentence end after 20 s of audio
+(`ASR_SEGMENT_MIN_LENGTH`), or after 20 s of silence (`ASR_SEGMENT_PAUSE`), so
 `segments.json` and `extractions.json` may stay empty until a short stream ends.
 
 ### Shorter runs with clips

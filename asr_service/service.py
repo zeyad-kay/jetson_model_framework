@@ -15,7 +15,7 @@ class ASRService(WorkerService):
 
     Idles until queue_session() names a session, then reads <session>/audio/audio.pcm,
     transcribes it and writes <session>/transcript/transcript.txt (plus timestamped
-    transcript.jsonl and the pause-separated segments.json) until the
+    transcript.jsonl and segments.json, split at sentence ends and pauses; see SegmentTracker) until the
     session ends (end_session(), or queue_session() of the next session). shutdown() ends the
     current session and makes run() return.
     """
@@ -41,7 +41,8 @@ class ASRService(WorkerService):
         audio_path = session_dir / "audio" / "audio.pcm"
         transcript_dir = session_dir / "transcript"
         tracker = SegmentTracker(
-            transcript_dir / "segments.json", self.config.segment_pause, self._model.chunk_seconds
+            transcript_dir / "segments.json", self.config.segment_pause,
+            self.config.segment_min_length, self._model.chunk_seconds,
         )
         try:
             # Nemotron emits text fragments (tokens), so no separator between writes.
