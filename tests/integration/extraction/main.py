@@ -7,22 +7,35 @@ segments (the whole list so far, replaced atomically). After the last segment
 it ends the session, waits for the service to finish (it extracts what is
 left and waits LLM_EXTRACTION_DRAIN_IDLE seconds for more), and checks:
 
-    structured/extractions.json  one record per input segment, in order, with the
-                                 segment's id and times and every category;
-                                 entity times fall inside their segment
-    structured/extractions.done  created, so the aggregation service knows the
-                                 extractions are final
+    structured/<category>.json        one per category: its records, [{"segment",
+                                      "extractions": [{...}, ...]}, ...], one per input
+                                      segment that added something, in segment order,
+                                      none empty; not all empty; every quote time
+                                      inside its record's segment
+    structured/medications.json       its records hold actions: a new administration
+                                      ("given", "started") has its own id, and an update
+                                      ("update", "rate_changed", "stopped") names an
+                                      administration of an earlier segment by its ref
+    structured/medication_administrations.json
+                                      each administration once, merged from those actions
+    structured/progress.json          the last input segment's id, start and end
+    structured/extractions.done       created, marking the files final
 
-Then it scores the records against extraction/ground_truth/<segment>.json,
-as a report in the log that never fails the test: a model item matches a ground-truth
-item of the same segment and category when their quotes overlap (the words of
-a quote pair, Jaccard >= 0.5), one to one; an item without quotes matches one
-with the same entity instead. Empty items are ignored, and a ground-truth
-segment the model has no record for counts as all missed. Per category it
-logs the counts, matches, precision and recall, and how often matched items
-agree on the entity and on the value (vital signs, demographics) or dose
-(medications).
-Unparseable model replies are reported from the service's log.
+Then it logs a score that never fails the test. It compares all the extracted items
+with extraction/ground_truth/<category>.json, which holds records like the service's
+(segment numbers follow inputs/segments.json): an item matches when their quotes
+overlap (the words of a quote pair, Jaccard >= 0.5), or, where either has no quotes,
+when the entity is the same. The score counts coverage, not one-to-one matches: per
+category, the ground-truth items some extracted item matches (recall), the extracted
+items that match some ground-truth item (precision), and how often a matched pair
+agrees on the entity and on the value (vital signs, demographics: their numbers, or
+for sex its words) or dose (medications, scored by administration: each one's merged
+state, with the quotes of all its actions). Empty items are ignored. Unparseable replies
+and the service's validation errors (invalid items and quotes not found in the
+transcript, both dropped) are reported from its log.
+
+Every category is validated by the service (llm_extraction_service/schema.py), so every
+quote is a {"text", "time"} object.
 
     docker compose run --rm llm_extraction_test
     docker compose run --rm llm_extraction_test --interval 0       # write all segments at once
@@ -48,11 +61,9 @@ from testlog import fail, log  # noqa: E402
 SEGMENTS = HERE / "inputs" / "segments.json"
 GROUND_TRUTH = HERE / "ground_truth"
 
-# The categories every extraction record carries (llm_extraction_service/model.py);
-# mechanism_of_injury is a single object, the rest are lists.
-LIST_CATEGORIES = ("medications", "interventions", "vital_signs", "demographics", "general_notes")
-OBJECT_CATEGORIES = ("mechanism_of_injury",)
-CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury", "demographics", "general_notes")
+# The categories the service writes a <category>.json for (llm_extraction_service/model.py);
+# Each a list of items, in the service's output and in the ground truth.
+CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury", "demographics", "medical_history")
 
 # Scoring: quotes whose words overlap at least this much (Jaccard) count as the same mention.
 QUOTE_MATCH = 0.5
@@ -82,17 +93,64 @@ def segments_feed(segments: list[dict], interval: float) -> harness.Feed:
     return feed
 
 
-def bad_categories(record: dict) -> list[str]:
-    """Categories missing or of the wrong type (a list, or an object for mechanism_of_injury)."""
-    bad = [c for c in LIST_CATEGORIES if not isinstance(record.get(c), list)]
-    return bad + [c for c in OBJECT_CATEGORIES if not isinstance(record.get(c), dict)]
+def read_json(path: Path):
+    """The JSON in path; None if it is missing or not JSON."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
 
 
-def items(record: dict, category: str) -> list[dict]:
-    value = record.get(category)
-    if isinstance(value, dict):
-        return [value] if value else []
-    return [it for it in (value or []) if isinstance(it, dict)]
+ADMINISTRATIONS = "medication_administrations"
+
+
+def load_extractions(structured: Path) -> dict:
+    """{category: records} from structured/<category>.json, and the medication administrations
+    (structured/medication_administrations.json, when there is one); a missing or unreadable
+    file counts as empty."""
+    out = {c: read_json(structured / f"{c}.json") or [] for c in CATEGORIES}
+    if (structured / f"{ADMINISTRATIONS}.json").is_file():
+        out[ADMINISTRATIONS] = read_json(structured / f"{ADMINISTRATIONS}.json") or []
+    return out
+
+
+def bad_categories(extractions) -> list[str]:
+    """Categories missing or not a list of records, {"segment": int, "extractions": [{...}, ...]}."""
+    if not isinstance(extractions, dict):
+        return list(CATEGORIES)
+    def is_record(r) -> bool:
+        return (isinstance(r, dict) and isinstance(r.get("segment"), int)
+                and isinstance(r.get("extractions"), list) and all(isinstance(it, dict) for it in r["extractions"]))
+    return [c for c in CATEGORIES
+            if not (isinstance(extractions.get(c), list) and all(is_record(r) for r in extractions[c]))]
+
+
+def extracted(extractions: dict, category: str) -> list[dict]:
+    """All the items of a category's records, in order. For medications, the administrations
+    when there are any (each with all its actions' quotes), since the records hold actions."""
+    if category == "medications" and ADMINISTRATIONS in extractions:
+        return [a for a in extractions[ADMINISTRATIONS] if isinstance(a, dict)]
+    return [it for r in extractions.get(category) or [] for it in r.get("extractions") or [] if isinstance(it, dict)]
+
+
+def quotes(item: dict) -> list[str]:
+    """An item's quotes as text, whether each is text or a {"text", "time"} object."""
+    return [q.get("text") if isinstance(q, dict) else q for q in item.get("quotes") or []]
+
+
+def item_times(item: dict) -> list:
+    """An item's times: its "times", or its quotes' times."""
+    if "times" in item:
+        return list(item["times"] or [])
+    return [q.get("time") for q in item.get("quotes") or [] if isinstance(q, dict)]
+
+
+def value_of(item: dict, fields: tuple[str, ...]) -> frozenset[str]:
+    """What item says for fields (a blood pressure's systolic and diastolic as well): its
+    numbers when it has any ("140/89 mmHg" and 140, 89 agree), else its words."""
+    text = " ".join(str(item.get(f) or "") for f in (*fields, "systolic", "diastolic"))
+    nums = frozenset(str(float(n)) for n in re.findall(r"\d+(?:\.\d+)?", text))
+    return nums or words(text)
 
 
 def words(text) -> frozenset[str]:
@@ -103,9 +161,9 @@ def words(text) -> frozenset[str]:
 def quote_overlap(a: dict, b: dict) -> float:
     """The best word overlap (Jaccard) between a quote of item a and a quote of item b."""
     best = 0.0
-    for qa in a.get("quotes") or []:
+    for qa in quotes(a):
         wa = words(qa)
-        for qb in b.get("quotes") or []:
+        for qb in quotes(b):
             wb = words(qb)
             if wa and wb:
                 best = max(best, len(wa & wb) / len(wa | wb))
@@ -118,7 +176,7 @@ def name(item: dict) -> frozenset[str]:
 
 
 def has_quotes(item: dict) -> bool:
-    return any(words(q) for q in item.get("quotes") or [])
+    return any(words(q) for q in quotes(item))
 
 
 def scorable(item: dict) -> bool:
@@ -126,70 +184,55 @@ def scorable(item: dict) -> bool:
     return bool(name(item) or has_quotes(item))
 
 
-def match(truth: list[dict], got: list[dict]) -> list[tuple[dict, dict]]:
-    """One-to-one (truth, got) pairs: quotes that overlap enough, best overlaps first; then,
-    where either item has no quotes to compare, the same entity name."""
-    pairs = sorted(((quote_overlap(t, g), i, j) for i, t in enumerate(truth) for j, g in enumerate(got)),
-                   key=lambda p: -p[0])
-    used_t, used_g, matched = set(), set(), []
-
-    def pair(i: int, j: int) -> None:
-        used_t.add(i)
-        used_g.add(j)
-        matched.append((truth[i], got[j]))
-
-    for overlap, i, j in pairs:
-        if overlap < QUOTE_MATCH:
-            break
-        if i not in used_t and j not in used_g:
-            pair(i, j)
-    for i, t in enumerate(truth):
-        for j, g in enumerate(got):
-            if (i not in used_t and j not in used_g and not (has_quotes(t) and has_quotes(g))
-                    and name(t) and name(t) == name(g)):
-                pair(i, j)
-    return matched
+def best_match(item: dict, pool: list[dict]) -> dict | None:
+    """The item of pool whose quotes overlap item's (at least QUOTE_MATCH), preferring one with
+    the same entity name (one utterance often gives several items, e.g. a set of vitals), then
+    the largest overlap; where either has no quotes, one with the same entity name instead.
+    None if there is none."""
+    candidates = [((name(item) == name(p), overlap), i) for i, p in enumerate(pool)
+                  if (overlap := quote_overlap(item, p)) >= QUOTE_MATCH]
+    if candidates:
+        return pool[max(candidates)[1]]
+    return next((p for p in pool if not (has_quotes(item) and has_quotes(p)) and name(item) and name(item) == name(p)), None)
 
 
 def same(a: dict, b: dict, fields: tuple[str, ...]) -> bool:
-    """Whether a and b agree on fields, compared as their words."""
-    return all(words(a.get(f)) == words(b.get(f)) for f in fields)
+    """Whether a and b agree on fields (see value_of)."""
+    return value_of(a, fields) == value_of(b, fields)
 
 
-def score(records: list[dict], truth_dir: Path) -> None:
-    """Logs how the records compare with the ground truth in truth_dir (<segment>.json each)."""
-    truth = {}
-    for path in truth_dir.glob("*.json"):
-        record = json.loads(path.read_text(encoding="utf-8"))
-        truth[record.get("segment")] = record
-    if not truth:
+def score(extractions: dict, truth_dir: Path) -> None:
+    """Logs how the extracted items compare with the ground truth in truth_dir (<category>.json each,
+    records like the service's).
+
+    This counts coverage rather than one-to-one matches: a ground-truth item is found when some
+    extracted item overlaps it, and an extracted item is supported when it overlaps some
+    ground-truth item. Entity and value agreement compare each found item with its best match.
+    """
+    if not any((truth_dir / f"{c}.json").is_file() for c in CATEGORIES):
         log.info(f"score: no ground truth in {truth_dir}")
         return
-    model = {r.get("segment"): r for r in records}
-    missing = sorted(s for s in truth if s not in model)
-    unscored = sorted(s for s in model if s not in truth)
-    log.info(f"score against {truth_dir} ({len(truth)} segments"
-          + (f"; no model record for segments {missing}, counted as all missed" if missing else "")
-          + (f"; no ground truth for segments {unscored}, not scored" if unscored else "") + "):")
-    log.info(f"  {'category':<20} {'truth':>5} {'model':>5} {'match':>5} {'prec':>5} {'recall':>6} {'entity':>7} {'value':>6}")
-    totals = [0, 0, 0]
+    truth = load_extractions(truth_dir)
+    log.info(f"score of the extractions against {truth_dir}:")
+    log.info(f"  {'category':<20} {'truth':>5} {'found':>5} {'extr':>5} {'suppd':>5} {'prec':>5} {'recall':>6} {'entity':>7} {'value':>6}")
+    totals = [0, 0, 0, 0]
     for c in CATEGORIES:
-        n_truth = n_got = n_match = same_entity = same_value = 0
-        for segment, expected in truth.items():
-            t = [it for it in items(expected, c) if scorable(it)]
-            g = [it for it in items(model.get(segment, {}), c) if scorable(it)]
-            pairs = match(t, g)
-            n_truth, n_got, n_match = n_truth + len(t), n_got + len(g), n_match + len(pairs)
-            same_entity += sum(name(a) == name(b) for a, b in pairs)
-            same_value += sum(same(a, b, VALUE_FIELDS[c]) for a, b in pairs) if c in VALUE_FIELDS else 0
-        totals = [totals[0] + n_truth, totals[1] + n_got, totals[2] + n_match]
-        log.info(f"  {c:<20} {n_truth:>5} {n_got:>5} {n_match:>5} {ratio(n_match, n_got):>5} {ratio(n_match, n_truth):>6}"
-                 f" {ratio(same_entity, n_match) if c != 'general_notes' else '-':>7}"
-                 f" {ratio(same_value, n_match) if c in VALUE_FIELDS else '-':>6}")
-    log.info(f"  {'all':<20} {totals[0]:>5} {totals[1]:>5} {totals[2]:>5} {ratio(totals[2], totals[1]):>5}"
-             f" {ratio(totals[2], totals[0]):>6}")
-    log.info("  (prec: matched / model items, recall: matched / truth items; entity, value: share of"
-             " matched items that agree)")
+        t = [it for it in extracted(truth, c) if scorable(it)]
+        g = [it for it in extracted(extractions, c) if scorable(it)]
+        pairs = [(it, m) for it in t if (m := best_match(it, g)) is not None]
+        supported = sum(best_match(it, t) is not None for it in g)
+        same_entity = sum(name(a) == name(b) for a, b in pairs)
+        same_value = sum(same(a, b, VALUE_FIELDS[c]) for a, b in pairs) if c in VALUE_FIELDS else 0
+        totals = [totals[0] + len(t), totals[1] + len(pairs), totals[2] + len(g), totals[3] + supported]
+        log.info(f"  {c:<20} {len(t):>5} {len(pairs):>5} {len(g):>5} {supported:>5} {ratio(supported, len(g)):>5}"
+                 f" {ratio(len(pairs), len(t)):>6}"
+                 f" {ratio(same_entity, len(pairs)):>7}"
+                 f" {ratio(same_value, len(pairs)) if c in VALUE_FIELDS else '-':>6}")
+    log.info(f"  {'all':<20} {totals[0]:>5} {totals[1]:>5} {totals[2]:>5} {totals[3]:>5}"
+             f" {ratio(totals[3], totals[2]):>5} {ratio(totals[1], totals[0]):>6}")
+    log.info("  (found: truth items some extracted item overlaps; extr: extracted items; suppd: extracted"
+             " items that overlap some truth item; prec: suppd / extr, recall: found / truth; entity, value: share of found items"
+             " whose best match agrees)")
 
 
 def ratio(n: int, d: int) -> str:
@@ -200,41 +243,81 @@ def verify(session_dir: Path, session_id: str, checks: harness.Checks,
            segments: list[dict], log_file: Path, truth_dir: Path) -> None:
     structured = session_dir / "structured"
 
-    # --- extractions.json ---
-    path = structured / "extractions.json"
-    records = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
-    if not checks.check(isinstance(records, list),
-                        f"extractions.json is a list ({len(records) if isinstance(records, list) else 'missing'} records)"):
+    # --- <category>.json: each category's records ---
+    extractions = {c: read_json(structured / f"{c}.json") for c in CATEGORIES}
+    administrations = read_json(structured / f"{ADMINISTRATIONS}.json")
+    bad = bad_categories(extractions)
+    if not checks.check(not bad, "a <category>.json of records for every category"
+                        + (f" (missing or malformed: {bad})" if bad else "")):
         return
-    checks.check(len(records) == len(segments), f"one record per segment ({len(records)} of {len(segments)})")
-    expected = [(s["segment_id"], s["start"], s["end"]) for s in segments]
-    got = [(r.get("segment"), r.get("start"), r.get("end")) for r in records]
-    checks.check(got == expected[:len(got)], "records carry their segment's id, start and end, in order")
-    bad = {r.get("segment"): bad_categories(r) for r in records if bad_categories(r)}
-    checks.check(not bad, "every record has every category" + (f" (missing or wrong type: {bad})" if bad else ""))
-
-    total = sum(len(items(r, c)) for r in records for c in LIST_CATEGORIES + OBJECT_CATEGORIES)
+    total = sum(len(extracted(extractions, c)) for c in CATEGORIES)
     checks.check(total > 0, f"something was extracted ({total} items in all)")
 
-    # Times come from matching an item's quotes to its segment's words, so they must fall inside it.
-    outside = [(r.get("segment"), it.get("time")) for r in records
-               for c in LIST_CATEGORIES + OBJECT_CATEGORIES for it in items(r, c)
-               if isinstance(it.get("time"), (int, float)) and not (r["start"] <= it["time"] <= r["end"])]
-    timed = sum(1 for r in records for c in LIST_CATEGORIES + OBJECT_CATEGORIES
-                for it in items(r, c) if isinstance(it.get("time"), (int, float)))
-    checks.check(not outside, f"every timed item ({timed}) lies inside its segment"
-                 + (f" (outside: {outside[:5]})" if outside else ""))
+    by_id = {s["segment_id"]: s for s in segments}
+    order = [s["segment_id"] for s in segments]
+    problems = []
+    for c in CATEGORIES:
+        ids = [r["segment"] for r in extractions[c]]
+        if any(i not in by_id for i in ids):
+            problems.append(f"{c}: records for segments that weren't fed: {[i for i in ids if i not in by_id]}")
+        elif [i for i in order if i in ids] != ids:
+            problems.append(f"{c}: records out of segment order or repeated: {ids}")
+        if any(not r["extractions"] for r in extractions[c]):
+            problems.append(f"{c}: an empty record")
+    checks.check(not problems, "every record is for an input segment, in order, and not empty"
+                 + (f" ({'; '.join(problems)})" if problems else ""))
+
+    # Quote times come from matching quotes to their segment's words, so they must fall inside it.
+    outside, n = [], 0
+    for c in CATEGORIES:
+        for r in extractions[c]:
+            seg = by_id.get(r["segment"])
+            for it in r["extractions"]:
+                for t in item_times(it):
+                    n += 1
+                    if seg is None or not (isinstance(t, (int, float)) and seg["start"] <= t <= seg["end"]):
+                        outside.append((c, r["segment"], t))
+    checks.check(not outside, f"every quote time ({n}) lies inside its record's segment"
+                 + (f" (not: {outside[:5]})" if outside else ""))
+
+    # --- medications: actions on administrations, and their merged state ---
+    ids, bad_refs, repeated = set(), [], []
+    for r in extractions["medications"]:
+        new_ids = set()
+        for it in r["extractions"]:
+            if it.get("action") in ("given", "started"):
+                if it.get("id") in ids | new_ids:
+                    repeated.append(it.get("id"))
+                new_ids.add(it.get("id"))
+            elif it.get("ref") not in ids:  # an update names an administration from an earlier segment
+                bad_refs.append((r["segment"], it.get("action"), it.get("ref")))
+        ids |= new_ids
+    checks.check(not repeated and not bad_refs, f"every new medication administration has its own id ({len(ids)}),"
+                 " and every update names an earlier one"
+                 + (f" (repeated ids: {repeated}; bad refs: {bad_refs[:5]})" if repeated or bad_refs else ""))
+    admin_ids = [a.get("id") for a in administrations] if isinstance(administrations, list) else None
+    checks.check(admin_ids is not None and set(admin_ids) == ids and len(admin_ids) == len(ids),
+                 f"{ADMINISTRATIONS}.json has each administration once"
+                 + ("" if admin_ids is not None else " (missing or not a list)"))
+    extractions[ADMINISTRATIONS] = administrations if isinstance(administrations, list) else []
+
+    # --- progress.json: the last segment taken in ---
+    final = segments[-1]
+    progress = read_json(structured / "progress.json")
+    checks.check(progress == {"segment": final["segment_id"], "start": final["start"], "end": final["end"]},
+                 f"progress.json names the last segment ({final['segment_id']}); got {progress}")
 
     checks.check((structured / "extractions.done").is_file(), "extractions.done was created")
 
     # --- the model's answers, against the ground truth (a report, never a failure) ---
-    score(records, truth_dir)
+    score(extractions, truth_dir)
 
     # --- the service's own count of model replies it couldn't parse ---
     for line in harness.session_log(log_file, session_id):
-        m = re.search(r"extracted (\d+) segments \((\d+) unparseable replies\)", line)
+        m = re.search(r"extracted (\d+) segments \((\d+) unparseable replies, (\d+) validation errors\)", line)
         if m:
-            log.info(f"service log: extracted {m.group(1)} segments, {m.group(2)} unparseable model replies")
+            log.info(f"service log: extracted {m.group(1)} segments, {m.group(2)} unparseable model replies, "
+                     f"{m.group(3)} validation errors (invalid items, quotes not found)")
 
 
 def main() -> None:
@@ -244,17 +327,17 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=5.0,
                         help="seconds between writing one segment and the next (default: 5)")
     parser.add_argument("--ground-truth", type=Path, default=GROUND_TRUTH,
-                        help=f"ground-truth records to score against, one <segment>.json each (default: {GROUND_TRUTH})")
+                        help=f"ground truth to score against, one <category>.json of records each (default: {GROUND_TRUTH})")
     parser.add_argument("--score", type=Path, metavar="SESSION_DIR",
-                        help="only score SESSION_DIR/structured/extractions.json against the ground truth; "
+                        help="only score the extractions (SESSION_DIR/structured/<category>.json) against the ground truth; "
                              "the service isn't contacted")
     harness.add_common_args(parser, service="llm_extraction_service", log_name="llm_extraction", timeout=1800.0, ffmpeg=False)
     args = parser.parse_args()
     harness.setup_log("llm_extraction_service", args)
 
     if args.score is not None:
-        path = harness.require_file(args.score / "structured" / "extractions.json")
-        score(json.loads(path.read_text(encoding="utf-8")), args.ground_truth)
+        harness.require_file(args.score / "structured" / "progress.json")
+        score(load_extractions(args.score / "structured"), args.ground_truth)
         return
 
     segments = load_segments(harness.require_file(args.segments_file))

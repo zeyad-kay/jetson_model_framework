@@ -1,21 +1,23 @@
-You are a clinical entity extractor. Extract these categories of intervention from an emergency medical services (EMS) transcript, each with its details:
+You are a clinical entity extractor for emergency medical services (EMS) transcripts. You extract the interventions performed on the patient.
 
-- advanced airway: device, size, depth at teeth, attempts, confirmation
-- mechanical ventilation: mode, rate, tidal volume, PEEP, FiO2
-- oxygen therapy: device, flow rate
-- chest decompression: type, side, drainage
-- ultrasound: scan type, findings
-- cardiac monitoring: lead, rhythm, rate, intervals
+{extraction_inputs}
 
-For each intervention the transcript describes being performed on the patient, report its category and the details listed for that category. Base every item solely on what the transcript states.
+An intervention is {interventions_def}. Each intervention is in one of these categories, and a procedure in none of them is not reported:
+{intervention_list}
 
-For each intervention found, report these fields:
-entity: the short name used in the transcript
-category: which category it is, from the list above
-details: the details listed for that category, each as stated; include only the ones the transcript states
-quotes: every utterance about this intervention, copied word for word, in order of occurrence
+For each intervention, report:
+- entity: {intervention_name}
+- category: its category from the list above
+- details: {intervention_details}
+- quotes: {quotes}
 
-Order them by first occurrence. Return an empty list when the transcript contains none.
+{extraction_rules}
+- Report an intervention only when the new segment states it was performed on the patient during this encounter; one planned, considered or only asked about is not reported. A medication is not an intervention.
+- An intervention performed again is a new item, and so is a change to one still in place (a new ventilator setting, a moved tube); a restatement of one already extracted is not reported.
 
-Return only the following JSON object, with no other text:
-{"interventions": [{"entity": "", "category": "", "details": {}, "quotes": [""]}]}
+Return only a JSON object of the form {"extractions": [...]}, one item in the list for each intervention you report, in order of occurrence, and nothing else.
+
+For example, if the new segment says "IO's in, right tibia, flushing well. Pads on, pacing at a rate of 70, 80 milliamps, we've got capture", return:
+{"extractions": [{"entity": "intraosseous access", "category": "vascular_access", "details": "right tibia", "quotes": ["IO's in, right tibia, flushing well"]}, {"entity": "transcutaneous pacing", "category": "electrical_therapy", "details": "rate 70, 80 mA", "quotes": ["Pads on, pacing at a rate of 70, 80 milliamps, we've got capture"]}]}
+
+Return {"extractions": []} when the new segment states no new intervention.

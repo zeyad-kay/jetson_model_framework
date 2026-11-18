@@ -14,6 +14,6 @@ WORKDIR /tests
 COPY integration/ integration/
 COPY e2e/*.py e2e/
 
-# Each compose service (client, asr_test, video_test, llm_extraction_test,
-# llm_aggregation_test) sets its own entrypoint.
+# Each compose service (client, asr_test, video_test, llm_extraction_test) sets its
+# own entrypoint.
 ENTRYPOINT ["python3"]

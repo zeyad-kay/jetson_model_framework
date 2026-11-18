@@ -1,0 +1,172 @@
+[
+    {
+        "segment": 1,
+        "extractions": [
+            {
+                "entity": "blood_pressure",
+                "standard_name": "blood pressure",
+                "systolic": "146",
+                "diastolic": "101",
+                "quotes": [
+                    {
+                        "text": "Pressure with that, 146 over 101, MAP 118.",
+                        "time": 12.32
+                    }
+                ]
+            },
+            {
+                "entity": "map",
+                "standard_name": "mean arterial pressure",
+                "value": "118",
+                "quotes": [
+                    {
+                        "text": "Pressure with that, 146 over 101, MAP 118.",
+                        "time": 12.32
+                    }
+                ]
+            },
+            {
+                "entity": "heart_rate",
+                "standard_name": "heart_rate",
+                "value": "111",
+                "quotes": [
+                    {
+                        "text": "Heart rate 111, sats 100, resp rate 22.",
+                        "time": 19.32
+                    }
+                ]
+            },
+            {
+                "entity": "saturation",
+                "standard_name": "oxygen saturation",
+                "value": "100",
+                "quotes": [
+                    {
+                        "text": "Heart rate 111, sats 100, resp rate 22.",
+                        "time": 19.32
+                    }
+                ]
+            },
+            {
+                "entity": "respiratory_rate",
+                "standard_name": "respiratory rate",
+                "value": "22",
+                "quotes": [
+                    {
+                        "text": "Heart rate 111, sats 100, resp rate 22.",
+                        "time": 19.32
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "segment": 2,
+        "extractions": [
+            {
+                "entity": "respiratory_rate",
+                "standard_name": "respiratory rate",
+                "value": "16",
+                "quotes": [
+                    {
+                        "text": "Resp rate 16 on the bag, end tidal 38, peak pressure 18.",
+                        "time": 120.42
+                    }
+                ]
+            },
+            {
+                "entity": "end_tidal_co2",
+                "standard_name": "end-tidal carbon dioxide",
+                "value": "38",
+                "quotes": [
+                    {
+                        "text": "Resp rate 16 on the bag, end tidal 38, peak pressure 18.",
+                        "time": 120.42
+                    }
+                ]
+            },
+            {
+                "entity": "peak_pressure",
+                "standard_name": "peak pressure",
+                "value": "18",
+                "quotes": [
+                    {
+                        "text": "Resp rate 16 on the bag, end tidal 38, peak pressure 18.",
+                        "time": 120.42
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "segment": 3,
+        "extractions": [
+            {
+                "entity": "temperature",
+                "standard_name": "body temperature",
+                "value": "35.2",
+                "unit": "°C",
+                "quotes": [
+                    {
+                        "text": "Temp 35.2, GCS 9, E2 V3 M4, sugar 7.8.",
+                        "time": 150.6
+                    }
+                ]
+            },
+            {
+                "entity": "gcs",
+                "standard_name": "Glasgow Coma Scale",
+                "value": "9",
+                "eye": "2",
+                "verbal": "3",
+                "motor": "4",
+                "quotes": [
+                    {
+                        "text": "Temp 35.2, GCS 9, E2 V3 M4, sugar 7.8.",
+                        "time": 150.6
+                    }
+                ]
+            },
+            {
+                "entity": "glucose",
+                "standard_name": "blood glucose",
+                "value": "7.8",
+                "unit": "mmol/L",
+                "quotes": [
+                    {
+                        "text": "Temp 35.2, GCS 9, E2 V3 M4, sugar 7.8.",
+                        "time": 150.6
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "segment": 7,
+        "extractions": [
+            {
+                "entity": "blood_pressure",
+                "standard_name": "blood pressure",
+                "systolic": "180",
+                "diastolic": "116",
+                "quotes": [
+                    {
+                        "text": "Post tube, BP 180 over 116, MAP 139.",
+                        "time": 2862.0
+                    }
+                ]
+            },
+            {
+                "entity": "map",
+                "standard_name": "mean arterial pressure",
+                "value": "139",
+                "quotes": [
+                    {
+                        "text": "Post tube, BP 180 over 116, MAP 139.",
+                        "time": 2862.0
+                    }
+                ]
+            }
+        ]
+    }
+]

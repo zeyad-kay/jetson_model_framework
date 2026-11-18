@@ -1,27 +1,157 @@
-# Shared prompt fragments — the single place to edit category definitions and the common
-# field descriptions. Every prompt references these as {placeholder}; they are substituted
-# when a prompt is loaded, so a change here updates combined and separated at once.
+# ============================================================================
+# Shared prompt fragments — the single source for definitions and field text.
+# Prompts reference entries as {placeholder}, substituted when a prompt loads:
 #
-#   fields:      {entity} {standard_name} {route} {dose} {rate} {body_site} {device} {quotes}
-#   definitions: {medications_def} {interventions_def} {vital_signs_def}
-#                {mechanism_of_injury_def} {demographics_def} {general_notes_def}
+#   definitions.X        -> {X_def}      (e.g. {medications_def})
+#   common_fields.X      -> {X}          ({entity} {standard_name} {value} {note} {quotes})
+#   medication_fields.X  -> {medication_name} {dose} {dose_unit} {rate} {rate_unit} {route}
+#   vital_sign_fields.X  -> {systolic} {diastolic} {gcs_parts}
+#   mechanism_of_injury_fields.X -> {mechanism_description}
+#   intervention_fields.X -> {intervention_name} {intervention_details}
+#   (every section named *_fields works the same way)
+#   instructions.X       -> {X}          ({extraction_inputs} {medication_inputs} {extraction_rules} {quote_rule})
+#   rendered blocks      -> {intervention_list} {intervention_categories}
+#                           {demographics_entities} {vital_signs_entities} {medical_history_entities}
+#                           {demographics_entity_list} {vital_signs_entity_list} {medical_history_entity_list}
+#                           {medication_route_list}
+#
+# {intervention_list}  is built from intervention_categories, which must be exactly
+#     llm_extraction_service/schema.py's Intervention.CATEGORIES (or the prompts fail to load):
+#     one line per category: "- <category>: <category definition>"
+# {medication_route_list}  is built from medication_routes, which must be exactly the routes of
+#     llm_extraction_service/schema.py's Medication.ROUTES: one line per route: "- <route>: <description>"
+# {intervention_categories}  is their names, comma-separated (underscores shown as spaces)
+# {<category>_entities}  is the entities llm_extraction_service/schema.py accepts, comma-separated
+# {<category>_entity_list}  is built from <category>.entities below, in the schema's order:
+#     one line per entity: "- <entity>: <description>"; the entities must be exactly the
+#     schema's, or the prompts fail to load
+#
+# A placeholder with no entry here is an error when the prompts load.
+# ============================================================================
 
-fields:
+# 1. Entity-type definitions — what each extractor collects
+definitions:
+  medications: any medication or treatment administered to the patient during this encounter
+  interventions: a procedure performed on the patient during this encounter, the procedure is restricted to a set of categories
+  vital_signs: a measurement of the body's essential physiological functions
+  mechanism_of_injury: the environmental or physical forces that acted upon one or multiple body parts to produce trauma
+  demographics: the patient's age, sex, height, and weight
+  general_notes: patient's past medical and family history, and chief complaint or any symptoms in response to the injury and responder's differential diagnosis
+  medical_history: the patient's past medical history and medications, their family's medical history, and the conditions and symptoms the patient has besides the injury
+
+# clinically relevant observations or cues in the scene
+
+# 2. Common fields — reused by every extractor
+common_fields:
   entity: the short name used in the transcript
   standard_name: the standard clinical name for the entity
-  route: "the route of administration by which the medication enters the body, reported as one of these routes: intravenous, intraosseous, intramuscular, subcutaneous, intranasal, inhaled, oral, sublingual, buccal, rectal, transdermal"
-  dose: "the amount of the single mass given, as a number without its unit; an empty string when this part states only a rate, or states no amount"
-  dose_unit: "the unit of that mass; an empty string when no single mass is stated"
-  rate: "a list of the speeds the medication is set to run at, each as a number without its unit, with each change in order as said; an empty list when no rate is stated"
-  rate_unit: "the unit of the rate, a mass per unit of time or per kilogram per unit of time; an empty string when no rate is stated"
-  body_site: the anatomical site
-  device: the equipment used or left in place, with its size or settings when stated
-  quotes: every utterance that gives information about the entity, copied word for word, in order of occurrence
+  value: the value as stated, with its units when given
+  note: a concise clinical statement of the observation, in your own words
+  number: the number alone, as a JSON number, without its unit; an approximate value ("about 80") is its number
+  unit: the unit, when stated, else leave it out
+  quotes: a list of one or more quotes, as plain strings in order of occurrence; each is one continuous stretch of the new segment's transcript that gives information about the entity, whether or not it names it, copied word for word, never joined from separate parts and never from the previous extractions; an item with no such quote is not reported
 
-definitions:
-  medications: any medication administered to the patient during this encounter
-  interventions: a treatment or procedure performed on the patient during this encounter
-  vital_signs: a measurement of the body's essential physiological functions
-  mechanism_of_injury: the single event or force that caused the patient's injury
-  demographics: the patient's age, sex, height, or weight
-  general_notes: a clinically relevant observation or finding that helps the care team understand the situation, such as the chief complaint, the responder's clinical reasoning, or the patient's past medical and family history
+# 3. Medication fields — only the medication extractor uses these
+medication_fields:
+  medication_name: the medication's generic name in standard clinical terms ("ketamine" for "ket", "norepinephrine" for "noradrenaline" or "levo")
+  dose: the total amount given at once, the number alone as a JSON number, without its unit; not a rate
+  dose_unit: the dose's unit as stated ("mg", "mcg", "g", "mL", "units"); leave it out when not stated
+  rate: the speed of an infusion, the number alone as a JSON number, without its unit
+  rate_unit: the rate's unit as stated ("mg/kg/h", "mcg/kg/min", "mcg/min", "mL/h"); leave it out when not stated
+  route: "how the medication enters the body: one of the routes below, by its full name; leave it out when not stated"
+  medication_ref: the id of the administration in the previous extractions that the action is about ("ketamine-2")
+
+# 3a. Medication routes — a medication's route must be one of them (schema.py's Medication.ROUTES)
+medication_routes:
+  intravenous: into a vein (IV)
+  intraosseous: into the bone marrow (IO)
+  intramuscular: into a muscle (IM)
+  subcutaneous: under the skin (SC, SQ, subcut)
+  intranasal: into the nose (IN)
+  inhaled: breathed in (nebulized, an inhaler)
+  oral: by mouth (PO)
+  sublingual: under the tongue (SL)
+  buccal: against the cheek
+  rectal: into the rectum (PR)
+  transdermal: through the skin (a patch)
+
+# 3b. Vital sign fields — only the vital signs extractor uses these
+vital_sign_fields:
+  systolic: the systolic pressure, the first number of a blood pressure ("146 over 101" is 146), as a JSON number, higher than the diastolic
+  diastolic: the diastolic pressure, the second number of a blood pressure ("146 over 101" is 101), as a JSON number
+  gcs_parts: "the eye (1-4), verbal (1-5) and motor (1-6) scores, as whole JSON numbers, when stated (\"E2 V3 M4\" is eye 2, verbal 3, motor 4)"
+
+# 4. Intervention categories — the 11 categories the interventions extractor looks for; an
+#    intervention must be one of them (schema.py's Intervention.CATEGORIES)
+intervention_categories:
+  advanced_airway: an invasive airway device placed to secure the airway
+  mechanical_ventilation: breathing delivered and controlled by a ventilator
+  oxygen_therapy: supplemental oxygen delivered by a device at a flow, without a ventilator
+  chest_decompression: a needle, finger, or tube procedure to relieve or drain the chest
+  ultrasound: a point of care ultrasound scan performed on the patient
+  cardiac_monitoring: observation of the cardiac rhythm and rate on an ECG or monitor
+  electrical_therapy: a synchronized cardioversion or cardiac pacing delivered to the heart
+  vascular_access: a peripheral intravenous, intraosseous, central, or arterial line placed
+  spinal_motion_restriction: immobilization applied to limit spinal movement
+  blood_product: a blood product transfused to the patient
+  cardiac_arrest_care: resuscitation delivered for cardiac arrest
+
+# 5. Instructions — shared by every extractor
+instructions:
+  extraction_inputs: |
+    A long encounter is extracted one transcript segment at a time. Each request gives you two inputs:
+    - PREVIOUS EXTRACTIONS: what was already extracted from the earlier segments, as a JSON list of records, oldest first, each {"segment": <segment number>, "extractions": [<items, in the same form you report them, with quotes as text>]}; it is [] at the start. It is context only: use it to know what is already recorded and what the new segment refers to, and never extract from it.
+    - TRANSCRIPT OF THE NEW SEGMENT: the transcribed speech of the new segment. Everything you report comes from it.
+  medication_inputs: |
+    A long encounter is extracted one transcript segment at a time. Each request gives you two inputs:
+    - PREVIOUS EXTRACTIONS: the medication administrations already extracted from the earlier segments, as a JSON list, oldest first, each with its current state: {"id", "type" ("bolus" or "infusion"), "entity", "standard_name", "dose", "dose_unit", "rate", "rate_unit", "route", "status" ("given", "running" or "stopped")}, leaving out what was never stated; it is [] at the start. It is context only: use it to know which administrations exist, by their id, and what the new segment refers to ("the ketamine", "increase it"), and never extract from it.
+    - TRANSCRIPT OF THE NEW SEGMENT: the transcribed speech of the new segment. Everything you report comes from it.
+  quote_rule: Every item must include at least one quote, copied word for word from the new segment, that states it; if you cannot quote the new segment for an item, do not report it.
+  extraction_rules: |
+    Return only what the new segment states:
+    - When the new segment changes or corrects one already extracted, add an item for it as the new segment now states it.
+    - Do not repeat an item of the previous extractions that the new segment does not mention.
+    - Base every item solely on what the new segment states, and leave any field it does not state empty.
+    - {quote_rule}
+
+# 6. Demographics — the demographics extractor; the entities are the ones
+#    llm_extraction_service/schema.py accepts (Age, Sex, Weight, Height)
+demographics:
+  entities:
+    age: the patient's age, a number, with unit "years" (or "months" or "days" for an infant)
+    sex: the patient's sex, "male" or "female", with no unit
+    weight: the patient's body weight, a number, with its unit as stated, e.g. "kg" or "lb"
+    height: the patient's height, a number, with its unit as stated, e.g. "cm" or "ft"
+
+# 7. Vital signs — the vital signs extractor; the entities are the ones
+#    llm_extraction_service/schema.py accepts, one class each
+vital_signs:
+  entities:
+    blood_pressure: arterial blood pressure (BP), reported as systolic and diastolic instead of value; unit "mmHg" when stated
+    map: mean arterial pressure (MAP), a number; unit "mmHg" when stated
+    heart_rate: heart rate or pulse (HR), a number of beats per minute
+    saturation: oxygen saturation (sats, SpO2), a percentage from 0 to 100
+    respiratory_rate: respiratory rate (resp rate, resps, RR), a number of breaths per minute
+    end_tidal_co2: end-tidal carbon dioxide (end tidal, EtCO2), a number; unit "mmHg" when stated
+    peak_pressure: peak airway pressure on a ventilator or bag, a number; unit "cmH2O" when stated
+    temperature: body temperature (temp), a number, with its unit as stated, "°C" or "°F"
+    gcs: Glasgow Coma Scale (GCS), the total score from 3 to 15 as value, with the eye, verbal and motor scores when stated; when only the three scores are stated, value is their sum
+    glucose: blood glucose (sugar, BGL), a number, with its unit as stated, e.g. "mmol/L" or "mg/dL"
+
+# 8. Mechanism of injury — the mechanism of injury extractor; schema.py's MechanismOfInjury
+#    is one free-text description (its "entity") with its quotes, so there is no entity list
+mechanism_of_injury_fields:
+  mechanism_description: a short clinical description of how the injury happened, as the transcript states it — the kind of trauma (blunt, penetrating, burn, blast, ...), what caused it (a fall, a vehicle, an assault, ...) and the circumstances given (height, speed, the patient's position, ...)
+
+# 9. Medical history — the medical history extractor; the entities are the ones
+#    llm_extraction_service/schema.py's MedicalHistory accepts
+medical_history:
+  entities:
+    family_history: a condition in the patient's family ("his dad had a heart attack")
+    patient_history: the patient's own past conditions, surgeries, regular medications or allergies ("he's diabetic", "takes metformin")
+    comorbidity: a condition or symptom the patient has now, besides the injury and what it causes ("he's had a cough for a week", "she's pregnant")
+
+# 10. Intervention fields — the interventions extractor; schema.py's Intervention
+intervention_fields:
+  intervention_name: the procedure performed, in standard clinical terms ("endotracheal intubation", "intraosseous access", "transcutaneous pacing")
+  intervention_details: its details as stated, such as the device, size, site or settings ("size 8.0, 22 at the lips", "right tibia", "rate 70, 80 mA"); leave it out when none are stated

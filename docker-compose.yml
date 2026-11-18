@@ -77,6 +77,11 @@ services:
         source: ./asr_service
         target: /app/asr_service
         read_only: true
+      # Hugging Face model cache, kept on the host so models download once, not on every
+      # container recreate.
+      - type: bind
+        source: ./hf_cache
+        target: /root/.cache/huggingface
 
   llm_extraction_service:
     build:
@@ -109,38 +114,11 @@ services:
         source: ./llm_extraction_service
         target: /app/llm_extraction_service
         # read_only: true
-
-  llm_aggregation_service:
-    build:
-      context: .
-      dockerfile: llm_aggregation_service/Dockerfile
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: true
-    environment:
-      # Torch's pip cuDNN (9.20) mixes with the host-injected one (9.21) and fails with
-      # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
-      LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
-    volumes:
+      # Hugging Face model cache, kept on the host so models download once, not on every
+      # container recreate.
       - type: bind
-        source: ./sessions
-        target: ${SESSIONS_DIR:-/sessions}
-      - type: bind
-        source: ./logs
-        target: ${LOGS_DIR:-/logs}
-      - type: bind
-        source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
-      # Code is mounted over the copy baked into the image; restart the service to pick up edits.
-      - type: bind
-        source: ./common
-        target: /app/common
-        read_only: true
-      - type: bind
-        source: ./llm_aggregation_service
-        target: /app/llm_aggregation_service
-        read_only: true
+        source: ./hf_cache
+        target: /root/.cache/huggingface
 
   video_service:
     build:
@@ -173,6 +151,11 @@ services:
         source: ./video_service
         target: /app/video_service
         read_only: true
+      # Hugging Face model cache, kept on the host so models download once, not on every
+      # container recreate.
+      - type: bind
+        source: ./hf_cache
+        target: /root/.cache/huggingface
 
   # Web dashboard of a session's ePCR timeline (dashboard/), read-only over the sessions folder.
   # Open http://<jetson-ip>:${DASHBOARD_PORT:-8080}/ in a browser.
@@ -237,7 +220,6 @@ services:
   #   docker compose run --rm asr_test       # asr_service
   #   docker compose run --rm video_test     # video_service
   #   docker compose run --rm llm_extraction_test    # llm_extraction_service
-  #   docker compose run --rm llm_aggregation_test   # llm_aggregation_service
   asr_test: &service_test
     profiles: ["test"]
     image: jetson_model_framework-tests
@@ -270,7 +252,3 @@ services:
   llm_extraction_test:
     <<: *service_test
     entrypoint: ["python3", "/tests/integration/extraction/main.py"]
-
-  llm_aggregation_test:
-    <<: *service_test
-    entrypoint: ["python3", "/tests/integration/aggregation/main.py"]

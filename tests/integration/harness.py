@@ -1,13 +1,12 @@
 """Shared helpers for the per-service integration clients (asr/main.py, video/main.py,
-extraction/main.py, aggregation/main.py).
+extraction/main.py).
 
 An integration client tests one model service on its own, without the server:
 it creates a session folder the way the server does, drives the service over
 its bridge socket (queue_session / end_session), writes the service's input
 into the session as it would arrive live (with ffmpeg for audio and video, as
 the server's recorder would; segment by segment for the extraction service, as
-the ASR would; record by record for the aggregation service, as the extraction
-service would), then waits for the service to finish the session and checks its output.
+the ASR would), then waits for the service to finish the session and checks its output.
 
 Each service has its own folder: main.py (the client), inputs/ (what the client feeds
 the service) and ground_truth/ (what the output is compared against).

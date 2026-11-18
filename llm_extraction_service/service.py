@@ -10,14 +10,18 @@ log = get_logger(__name__)
 
 
 class LLMExtractionService(WorkerService):
-    """Extracts each session's ePCR entities from its transcript as it is recorded.
+    """Keeps each session's ePCR up to date as its transcript is recorded.
 
     Idles until queue_session() names a session, then follows the segments the ASR
-    service writes to <session>/transcript/segments.json, extracting each
-    segment as it appears into <session>/structured/extractions.json. Once the
-    session ends (end_session(), or queue_session() of the next session) and the last
-    segment is extracted, it creates structured/extractions.done, which tells the
-    aggregation service (llm_aggregation_service/) that extractions.json is final.
+    service writes to <session>/transcript/segments.json. Each segment can add a
+    record to each category of the ePCR (see QwenExtractor), and after each one the
+    service rewrites <session>/structured/<category>.json, one file per category
+    (medications, interventions, ...) holding that category's records so far,
+    [{"segment", "extractions": [...]}, ...], writes the current state of each medication
+    administration to structured/medication_administrations.json, and sets structured/progress.json to
+    {"segment", "start", "end"} of the segment. Once the session ends (end_session(),
+    or queue_session() of the next session) and the last segment is taken in, it
+    creates structured/extractions.done, which marks the files final.
     shutdown() ends the current session and makes run() return.
     """
 
@@ -40,20 +44,26 @@ class LLMExtractionService(WorkerService):
 
     def _process_session(self, session_dir: Path) -> None:
         segments_path = session_dir / "transcript" / "segments.json"
-        extractions_path = session_dir / "structured" / "extractions.json"
-        done_path = session_dir / "structured" / "extractions.done"
+        structured = session_dir / "structured"
+        done_path = structured / "extractions.done"
         try:
-            log.info("extracting %s, writing %s", segments_path, extractions_path)
+            log.info("following %s, writing %s/<category>.json", segments_path, structured)
             if not self._wait_for_file(segments_path):
                 return
 
-            records = []
-            for record in self._model.process(str(segments_path)):
-                records.append(record)
-                write_json(extractions_path, records)
+            count = 0
+            for record in self._model.extract(str(segments_path)):
+                count += 1
+                for c in self._model.CATEGORIES:
+                    write_json(structured / f"{c}.json", record[c])
+                write_json(structured / "medication_administrations.json", record["medication_administrations"])
+                # Written last, so it never names a segment the category files don't hold yet.
+                write_json(structured / "progress.json",
+                           {k: record[k] for k in ("segment", "start", "end")})
                 log.debug("extracted segment %s", record["segment"])
-            log.info("extracted %d segments (%d unparseable replies)", len(records), self._model.parse_failures)
+            log.info("extracted %d segments (%d unparseable replies, %d validation errors)",
+                     count, self._model.parse_failures, self._model.validation_errors)
         finally:
-            # Even when nothing was extracted or extraction failed, so the aggregator stops waiting.
+            # Even when nothing was extracted or extraction failed, so the session reads as ended.
             done_path.parent.mkdir(parents=True, exist_ok=True)
             done_path.touch()

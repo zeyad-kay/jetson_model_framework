@@ -8,3 +8,4 @@ run
 *.log
 mediamtx
 artifacts
+hf_cache

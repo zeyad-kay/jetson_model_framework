@@ -1,16 +1,54 @@
-You are a clinical entity extractor. Extract the medications from an emergency medical services (EMS) transcript. A medication is {medications_def}. Base every item solely on what the transcript states. This is one part of a longer encounter: report only what this part states, and leave empty any field this part does not state. A medication may have begun before this part, so do not assume a starting dose or rate that is not stated here.
+You are a clinical entity extractor for emergency medical services (EMS) transcripts. You extract the medications given to the patient, and follow each administration through the encounter.
 
-For each entity, report these fields:
-entity: {entity}
-standard_name: {standard_name}
-dose: {dose}
-dose_unit: {dose_unit}
-rate: {rate}
-rate_unit: {rate_unit}
-route: {route}; an empty string when the transcript does not state it
-quotes: every utterance that conveys any information about this entity, whether or not it names the medication, copied word for word, in order of occurrence
+{medication_inputs}
 
-Order them by first occurrence. Return an empty list when the transcript contains none.
+A medication is {medications_def}. Oxygen, blood products and the procedures of these intervention categories are not medications: {intervention_categories}.
 
-Return only the following JSON object, with no other text:
-{"medications": [{"entity": "", "standard_name": "", "dose": "", "dose_unit": "", "rate": [""], "rate_unit": "", "route": "", "quotes": [""]}]}
+Each bolus given and each infusion started is an administration. You report actions on administrations:
+- "given": a new bolus, a dose given at once
+- "started": a new infusion, run at a rate
+- "update": details of an administration in the previous extractions that the new segment states or corrects (its dose, a unit, its route)
+- "rate_changed": a new rate for an infusion in the previous extractions
+- "stopped": an infusion in the previous extractions that is stopped
+
+For a "given" or "started" action, report:
+- action: "given" or "started"
+- entity: the name used in the transcript ("ket", "levo")
+- standard_name: {medication_name}
+- dose, dose_unit, rate (an infusion only), rate_unit and route, when stated
+- quotes: {quotes}
+
+For an "update", "rate_changed" or "stopped" action, report:
+- action: "update", "rate_changed" or "stopped"
+- ref: {medication_ref}
+- of dose, dose_unit, rate, rate_unit and route, only those the new segment states; "rate_changed" always has the new rate
+- quotes: {quotes}
+
+The fields are:
+- dose: {dose}
+- dose_unit: {dose_unit}
+- rate: {rate}
+- rate_unit: {rate_unit}
+- route: {route}
+
+The routes are:
+{medication_route_list}
+
+Return only what the new segment states:
+- Report a medication only when the new segment states it was given or started during this encounter; one planned, drawn up, considered or only asked about is not reported, and the patient's regular medications are medical history, not medications given.
+- When the new segment is about an administration in the previous extractions ("the ketamine", "go up on it"), report an action with its ref; never a new administration for it. When several could be meant, it is the most recent one of that medication.
+- Another dose of a medication is a new "given" administration, even when one was given before.
+- Report each new administration of the new segment once, with what the segment states for it.
+- A restatement of what the previous extractions already have (read back, or at handover) is not reported.
+- Base every item solely on what the new segment states; do not assume a dose, rate, unit or route that has not been stated.
+- {quote_rule}
+
+Return only a JSON object of the form {"extractions": [...]}, one item in the list for each action you report, in order of occurrence, and nothing else.
+
+For example, if the previous extractions are [] and the new segment says "Five of morphine IV, pushing now. And start the noradrenaline, drip at 5 micrograms a minute", return:
+{"extractions": [{"action": "given", "entity": "morphine", "standard_name": "morphine", "dose": 5, "route": "intravenous", "quotes": ["Five of morphine IV, pushing now"]}, {"action": "started", "entity": "noradrenaline", "standard_name": "norepinephrine", "rate": 5, "rate_unit": "mcg/min", "quotes": ["start the noradrenaline, drip at 5 micrograms a minute"]}]}
+
+If the previous extractions are then [{"id": "morphine-1", "type": "bolus", "entity": "morphine", "standard_name": "morphine", "dose": 5, "route": "intravenous", "status": "given"}, {"id": "norepinephrine-1", "type": "infusion", "entity": "noradrenaline", "standard_name": "norepinephrine", "rate": 5, "rate_unit": "mcg/min", "status": "running"}] and the new segment says "That morphine was five milligrams. Pressure's still soft, go up on the norad to 8", return:
+{"extractions": [{"action": "update", "ref": "morphine-1", "dose": 5, "dose_unit": "mg", "quotes": ["That morphine was five milligrams"]}, {"action": "rate_changed", "ref": "norepinephrine-1", "rate": 8, "quotes": ["go up on the norad to 8"]}]}
+
+Return {"extractions": []} when the new segment states no new medication action.

@@ -1,5 +1,5 @@
-// Trauma timeline monitor: polls the dashboard server for a session's aggregate.json
-// (llm_aggregation_service's output) and draws it. Times in the aggregate are seconds
+// Trauma timeline monitor: polls the dashboard server for a session's ePCR (built from its
+// structured/ folder by dashboard/epcr.py) and draws it. Times in the ePCR are seconds
 // from the start of the recording, so the timeline shows elapsed time.
 "use strict";
 
@@ -15,7 +15,8 @@ const MAX_ROWS = 3;             // label rows per lane; events beyond them get a
 const INJURY_RE = /\b(injur\w*|trauma\w*|wound\w*|lacerat\w*|bruis\w*|fractur\w*|bleed\w*|blood in|swell\w*|swollen|pain\w*|deform\w*|contusion\w*|abrasion\w*|burn\w*|hematoma\w*|haematoma\w*)\b/i;
 
 const LANES = [
-  { key: "history", title: "Patient history", color: "var(--lane-history)" },
+  { key: "notes", title: "Medical history", color: "var(--lane-notes)" },
+  { key: "vitals", title: "Vital signs", color: "var(--lane-vitals)" },
   { key: "medications", title: "Medications", color: "var(--lane-medications)" },
   { key: "interventions", title: "Interventions", color: "var(--lane-interventions)" },
 ];
@@ -78,16 +79,54 @@ function clean(value) {
   return s && !/^(not specified|none|null|n\/a)$/i.test(s) ? s : null;
 }
 
-// ── aggregate → view model ──────────────────────────────────────────────────
+// ── ePCR → view model ──────────────────────────────────────────────────
 
 const asList = (v) => (Array.isArray(v) ? v : v && typeof v === "object" && Object.keys(v).length ? [v] : [])
   .filter((it) => it && typeof it === "object");
 
+const VITAL_NAMES = {
+  "blood pressure": "BP", "systolic blood pressure": "SBP", "diastolic blood pressure": "DBP",
+  "heart rate": "HR", "pulse": "HR", "oxygen saturation": "SpO₂", "respiratory rate": "RR",
+  "temperature": "Temp", "glasgow coma scale": "GCS", "eye opening": "E", "verbal response": "V",
+  "motor response": "M", "blood glucose": "BGL", "end tidal co2": "EtCO₂", "pain": "Pain",
+  "mean arterial pressure": "MAP", "end-tidal carbon dioxide": "EtCO₂", "peak pressure": "Ppeak",
+  "body temperature": "Temp",
+};
+const VITAL_GAP = 20; // s: a reading this close to the previous one belongs to the same set
+
+// Vital signs come in sets (BP, HR, SpO₂, RR… read out within seconds), so each set is one
+// event: a reading joins the current set while it is close in time and its vital isn't in it yet.
+function buildVitals(agg) {
+  const readings = asList(agg.vital_signs)
+    .map((v) => {
+      const name = String(v.standard_name || v.entity || "").toLowerCase().trim();
+      return { t: v.time, name, short: VITAL_NAMES[name] || capitalize(v.entity || name), value: clean(v.value), v };
+    })
+    .filter((r) => isNum(r.t) && r.value)
+    .sort((a, b) => a.t - b.t);
+  const sets = [];
+  for (const r of readings) {
+    const cur = sets[sets.length - 1];
+    if (cur && r.t - cur[cur.length - 1].t <= VITAL_GAP && !cur.some((o) => o.name === r.name)) cur.push(r);
+    else sets.push([r]);
+  }
+  return sets.map((set) => {
+    const parts = set.map((r) => `${r.short} ${r.value}`);
+    return {
+      kind: "Vital signs", t: set[0].t,
+      title: parts.slice(0, 2).join(" · "), sub: parts.slice(2).join(" · "),
+      details: set.map((r) => [`${r.short} · ${fmtTime(r.t)}`, r.value]),
+      quotes: set.flatMap((r) => r.v.quotes || []),
+    };
+  });
+}
+
 function buildModel(agg) {
-  const notes = asList(agg.general_notes).map((n) => ({
-    kind: "Patient history", t: n.time, title: n.entity || n.note || "", sub: "",
-    quotes: n.quotes, times: n.times,
+  const notes = asList(agg.medical_history).map((n) => ({
+    kind: "Medical history", t: n.time, title: n.note || "", sub: n.kind || "",
+    details: n.kind ? [["Kind", n.kind]] : [], quotes: n.quotes, times: n.times,
   }));
+  const vitals = buildVitals(agg);
 
   const meds = asList(agg.medications).map((m) => {
     const continuous = String(m.type || "").toLowerCase() === "continuous";
@@ -102,7 +141,8 @@ function buildModel(agg) {
     if (dose) details.push(["Dose", dose]);
     if (route) details.push(["Route", m.route]);
     if (continuous) details.push(["Type", "infusion"]);
-    if (isNum(m.end_time)) details.push(["Until", fmtTime(m.end_time)]);
+    if (m.status === "running") details.push(["Status", "running"]);
+    else if (isNum(m.end_time)) details.push(["Stopped", fmtTime(m.end_time)]);
     if (rates.length) details.push(["Rates", rates.map((rc) => `${fmtTime(rc.time)} → ${rc.rate}${unit ? " " + unit : ""}`).join("\n")]);
     return {
       kind: "Medication", t: m.start_time, end: isNum(m.end_time) ? m.end_time : null, continuous, rates,
@@ -111,19 +151,19 @@ function buildModel(agg) {
   });
 
   const interventions = asList(agg.interventions).map((it) => {
-    const details = it.details && typeof it.details === "object" ? it.details : {};
-    const summary = clean(details) || "";
-    const rows = Object.entries(details).map(([k, v]) => [capitalize(k), clean(v)]).filter(([, v]) => v);
-    if (clean(it.category)) rows.unshift(["Category", it.category]);
+    const summary = clean(it.details) || "";
+    const category = clean(it.category) ? it.category.replace(/_/g, " ") : "";
+    const rows = summary ? [["Details", summary]] : [];
+    if (category) rows.unshift(["Category", category]);
     return {
-      kind: "Intervention", t: it.time, title: capitalize(it.entity || ""), sub: summary || clean(it.category) || "",
+      kind: "Intervention", t: it.time, title: capitalize(it.entity || ""), sub: summary || category,
       details: rows, quotes: it.quotes, times: it.times,
     };
   });
 
   const injuries = notes.filter((n) => INJURY_RE.test(n.title) || (n.quotes || []).some((q) => INJURY_RE.test(q)));
 
-  return { lanes: { history: notes, medications: meds, interventions }, injuries };
+  return { lanes: { notes, vitals, medications: meds, interventions }, injuries };
 }
 
 function maxTime(model) {
@@ -166,19 +206,173 @@ function renderHeader(agg, detail) {
 
 // ── injuries ────────────────────────────────────────────────────────────────
 
+// Body regions an injury note can name. x, y are in the 100 × 222 figure's own units; for a
+// lateral region they are the patient's right side, mirrored for the left. Specific names
+// come before the general ones they contain (upper arm before arm).
+const REGIONS = [
+  { label: "Scalp", re: /\b(scalp|skull|cranial|forehead|occipital)\b/, view: "front", x: 50, y: 5 },
+  { label: "Head", re: /\bhead\b/, view: "front", x: 50, y: 9 },
+  { label: "Face", re: /\b(face|facial|eyes?|nose|nasal|jaw|mandible|mouth|lips?|cheek|ears?)\b/, view: "front", x: 50, y: 19 },
+  { label: "Neck", re: /\b(neck|cervical)\b/, view: "front", x: 50, y: 30 },
+  { label: "Shoulder", re: /\b(shoulders?|clavicles?|collarbones?)\b/, view: "front", x: 31, y: 41, lateral: true },
+  { label: "Chest", re: /\b(chest|thorax|thoracic cavity|ribs?|sternum|lungs?|pneumothorax|hemothorax|haemothorax)\b/, view: "front", x: 50, y: 58, sided: 11 },
+  { label: "Upper arm", re: /\b(upper arms?|humerus)\b/, view: "front", x: 27, y: 61, lateral: true },
+  { label: "Elbow", re: /\belbows?\b/, view: "front", x: 23, y: 80, lateral: true },
+  { label: "Forearm", re: /\b(forearms?|radius|ulna)\b/, view: "front", x: 21, y: 97, lateral: true },
+  { label: "Hand", re: /\b(wrists?|hands?|fingers?|thumbs?)\b/, view: "front", x: 18, y: 119, lateral: true },
+  { label: "Arm", re: /\barms?\b/, view: "front", x: 25, y: 72, lateral: true },
+  { label: "Abdomen", re: /\b(abdomen|abdominal|stomach|belly|liver|spleen)\b/, view: "front", x: 50, y: 88 },
+  { label: "Pelvis", re: /\b(pelvis|pelvic|groin)\b/, view: "front", x: 50, y: 112 },
+  { label: "Hip", re: /\bhips?\b/, view: "front", x: 36, y: 114, lateral: true },
+  { label: "Thigh", re: /\b(thighs?|femurs?|femoral)\b/, view: "front", x: 41, y: 140, lateral: true },
+  { label: "Knee", re: /\b(knees?|patella)\b/, view: "front", x: 42, y: 164, lateral: true },
+  { label: "Lower leg", re: /\b(lower legs?|shins?|tibia|fibula|calf|calves)\b/, view: "front", x: 42, y: 185, lateral: true },
+  { label: "Foot", re: /\b(ankles?|feet|foot|toes?)\b/, view: "front", x: 41, y: 210, lateral: true },
+  { label: "Leg", re: /\blegs?\b/, view: "front", x: 42, y: 160, lateral: true },
+  { label: "Spine", re: /\b(spine|spinal|vertebrae?|vertebral)\b/, view: "back", x: 50, y: 72 },
+  { label: "Upper back", re: /\b(upper back|scapulae?|shoulder blades?)\b/, view: "back", x: 50, y: 52 },
+  { label: "Lower back", re: /\b(lower back|lumbar|flanks?)\b/, view: "back", x: 50, y: 96 },
+  { label: "Back", re: /\bback\b(?! (to|up|in|on)\b)/, view: "back", x: 50, y: 80 },
+  { label: "Buttock", re: /\b(buttocks?|gluteal)\b/, view: "back", x: 42, y: 116, lateral: true },
+];
+const FIG_X = { front: 14, back: 146 };   // where each figure sits in the body-map svg (100 units wide)
+const BADGE_GAP = 7;                      // badge column's distance outside its figure
+const BADGE_STEP = 16;                    // min vertical distance between badges in a column
+const SIDE_RE = /\b(left|right|bilateral|both)\b(-sided)?|\b([LR])\b/gi;
+
+// The body regions a note names, each with the side(s) it is on: "L", "R", both, or none (midline).
+function injuryRegions(text) {
+  const found = [];
+  let rest = String(text || "");
+  for (const region of REGIONS) {
+    const re = new RegExp(region.re.source, "gi");
+    const sides = new Set();
+    let hit = false, plural = false, m;
+    while ((m = re.exec(rest))) {
+      hit = true;
+      if (/(s|feet|calves)$/i.test(m[0]) && !/(thorax|pelvis|humerus|radius|abdomen|patella)$/i.test(m[0])) plural = true;
+      // The side is the last "left"/"right" in the few words before the name.
+      const before = rest.slice(Math.max(0, m.index - 30), m.index);
+      const words = [...before.matchAll(SIDE_RE)].map((s) => s[0].toLowerCase());
+      const side = words[words.length - 1];
+      if (side === "left" || side === "l") sides.add("L");
+      else if (side === "right" || side === "r") sides.add("R");
+      else if (side === "bilateral" || side === "both") { sides.add("L"); sides.add("R"); }
+    }
+    if (!hit) continue;
+    // Blank out what matched, so "upper arm" isn't counted again as "arm".
+    rest = rest.replace(re, (s) => " ".repeat(s.length));
+    if (region.lateral && !sides.size) { sides.add("R"); sides.add("L"); }
+    const sideList = [...sides].sort().reverse(); // R before L
+    const both = sideList.length === 2;
+    const prefix = sideList.length === 1 ? sideList[0] + " " : "";
+    const label = prefix + (both && plural ? (region.label === "Foot" ? "Feet" : region.label + "s") : prefix ? region.label.toLowerCase() : region.label);
+    found.push({ region, sides: region.lateral || region.sided ? sideList : [], label });
+  }
+  return found;
+}
+
+// A region's points in the svg's units: one per side, the patient's left on the viewer's right
+// (front) or the viewer's left (back).
+function regionPoints({ region, sides }) {
+  const ox = FIG_X[region.view];
+  if (!sides.length) return [{ x: ox + region.x, y: region.y }];
+  return sides.map((side) => {
+    let x = region.lateral ? region.x : region.x - region.sided; // patient's right
+    const mirrored = (side === "L") === (region.view === "front");
+    if (mirrored) x = 100 - x;
+    return { x: ox + x, y: region.y };
+  });
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs, text) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function highlightInjury(num, on) {
+  document.querySelectorAll(`[data-injury="${num}"]`).forEach((n) => n.classList.toggle("hl", on));
+}
+
+function wireInjury(node, note, num) {
+  attachTooltip(node, note);
+  node.addEventListener("click", () => revealEvent(note));
+  node.addEventListener("mouseenter", () => highlightInjury(num, true));
+  node.addEventListener("mouseleave", () => highlightInjury(num, false));
+  node.addEventListener("focus", () => highlightInjury(num, true));
+  node.addEventListener("blur", () => highlightInjury(num, false));
+  node.dataset.injury = num;
+}
+
 function renderInjuries(model) {
-  const list = $("injury-list");
+  const list = $("injury-list"), chips = $("injury-chips"), marks = $("body-marks");
   list.replaceChildren();
+  chips.replaceChildren();
+  marks.replaceChildren();
+  // Each spot's badge goes in a column beside its figure, on the spot's side, pushed down
+  // where badges would overlap; a leader line joins them.
+  const columns = new Map(); // "front:-1" → [{ p, num, label, note }]
   model.injuries.forEach((note, i) => {
-    const li = el("li");
+    for (const r of injuryRegions(note.title)) {
+      for (const p of regionPoints(r)) {
+        const centre = FIG_X[r.region.view] + 50;
+        let dir = p.x > centre + 1 ? 1 : p.x < centre - 1 ? -1 : 0;
+        if (!dir) { // midline: the emptier column
+          const n = (d) => (columns.get(`${r.region.view}:${d}`) || []).length;
+          dir = n(-1) <= n(1) ? -1 : 1;
+        }
+        const key = `${r.region.view}:${dir}`;
+        if (!columns.has(key)) columns.set(key, []);
+        columns.get(key).push({ p, num: String(i + 1), label: r.label, note,
+                                x: FIG_X[r.region.view] + (dir < 0 ? -BADGE_GAP : 100 + BADGE_GAP) });
+      }
+    }
+  });
+  const dots = svgEl("g"), badges = svgEl("g");
+  marks.append(dots, badges);
+  for (const col of columns.values()) {
+    col.sort((a, b) => a.p.y - b.p.y || a.num - b.num);
+    let lastY = -Infinity;
+    for (const m of col) {
+      const by = Math.max(m.p.y, lastY + BADGE_STEP, 8);
+      lastY = by;
+      dots.append(svgEl("line", { class: "leader", x1: m.p.x, y1: m.p.y, x2: m.x, y2: by, "data-injury": m.num }),
+                  svgEl("circle", { class: "spot", cx: m.p.x, cy: m.p.y, r: 2.4, "data-injury": m.num }));
+      const badge = svgEl("g", { class: "badge", tabindex: "0", role: "button", "aria-label": `Injury ${m.num}: ${m.label}` });
+      badge.append(svgEl("circle", { cx: m.x, cy: by, r: 7 }), svgEl("text", { x: m.x, y: by }, m.num));
+      wireInjury(badge, m.note, m.num);
+      badges.append(badge);
+    }
+  }
+
+  model.injuries.forEach((note, i) => {
+    const num = String(i + 1);
+    const regions = injuryRegions(note.title);
+    const where = regions.map((r, j) => (j && !/^[LR] /.test(r.label) ? r.label.toLowerCase() : r.label)).join(", ");
+
+    if (regions.length) {
+      const chip = el("button", "chip");
+      chip.type = "button";
+      chip.append(el("span", "num", num), el("span", null, where));
+      wireInjury(chip, note, num);
+      const li = el("li");
+      li.append(chip);
+      chips.append(li);
+    }
+
     const button = el("button", "injury");
     button.type = "button";
-    button.append(el("span", "num", String(i + 1)), el("span", "text", note.title), el("span", "when", fmtTime(note.t)));
-    attachTooltip(button, note);
-    button.addEventListener("click", () => revealEvent(note));
+    button.append(el("span", "num", num), el("span", "text", note.title),
+                  el("span", "when", [fmtTime(note.t), where].filter(Boolean).join(" · ")));
+    wireInjury(button, note, num);
+    const li = el("li");
     li.append(button);
     list.append(li);
   });
+  chips.hidden = !chips.children.length;
   $("injuries-empty").hidden = model.injuries.length > 0;
 }
 
@@ -346,7 +540,7 @@ function syncAxis() {
   $("axis").style.transform = `translateX(${-scroll.scrollLeft}px)`;
   const from = (scroll.scrollLeft - PAD_LEFT) / state.pps;
   const to = (scroll.scrollLeft + scroll.clientWidth - PAD_LEFT) / state.pps;
-  $("range").textContent = state.detail && state.detail.aggregate ? `${fmtTime(Math.max(0, from))} – ${fmtTime(Math.max(0, to))}` : "";
+  $("range").textContent = state.detail && state.detail.epcr ? `${fmtTime(Math.max(0, from))} – ${fmtTime(Math.max(0, to))}` : "";
 }
 
 function revealEvent(item) {
@@ -412,14 +606,14 @@ function hideTooltip() { $("tooltip").hidden = true; }
 
 function render() {
   const detail = state.detail;
-  const agg = detail && detail.aggregate;
+  const agg = detail && detail.epcr;
   // The time format depends on the whole span, and the model formats some times (tooltips), so build twice.
   state.longTimes = maxTime(buildModel(agg || {})) >= 3600;
   const model = buildModel(agg || {});
   renderHeader(agg, detail);
   renderInjuries(model);
   renderTimeline(model);
-  $("timeline-empty").textContent = !detail ? "No session selected." : agg ? "Nothing on the timeline yet." : "Waiting for the first aggregate…";
+  $("timeline-empty").textContent = !detail ? "No session selected." : agg ? "Nothing on the timeline yet." : "Waiting for the first extraction…";
   $("timeline-empty").hidden = !!agg && Object.values(model.lanes).some((items) => items.length);
 }
 
@@ -443,9 +637,9 @@ async function loadSessions() {
   }
   let next = state.sessionId;
   if (!state.chosen) {
-    // Follow the newest live session; else the newest one with an aggregate.
-    const pick = state.sessions.find((s) => s.live && s.has_aggregate) || state.sessions.find((s) => s.live)
-      || state.sessions.find((s) => s.has_aggregate) || state.sessions[0];
+    // Follow the newest live session; else the newest one with an ePCR.
+    const pick = state.sessions.find((s) => s.live && s.has_epcr) || state.sessions.find((s) => s.live)
+      || state.sessions.find((s) => s.has_epcr) || state.sessions[0];
     next = pick ? pick.id : null;
   }
   if (next && !state.sessions.some((s) => s.id === next)) next = state.sessions[0] ? state.sessions[0].id : null;

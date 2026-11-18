@@ -2,9 +2,11 @@
 
     GET /                         the page (static/index.html)
     GET /static/<file>            its scripts and styles
-    GET /api/sessions             [{id, started, updated, live, has_aggregate}], newest first
-    GET /api/sessions/<id>        {id, started, updated, live, aggregate}, where aggregate is
-                                  <session>/structured/aggregate.json (null until the first one)
+    GET /api/sessions             [{id, started, updated, live, has_epcr}], newest first
+    GET /api/sessions/<id>        {id, started, updated, live, epcr}, where epcr is built from
+                                  <session>/structured/ (<category>.json and
+                                  medication_administrations.json, see epcr.py), null until the
+                                  extraction service has taken in its first segment
 
 Times are Unix seconds. /api/sessions/<id> carries an ETag, so a page polling it gets
 304 Not Modified until the session changes. Nothing is ever written.
@@ -20,6 +22,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from common.log import get_logger
+from dashboard.epcr import build, fingerprint
 
 log = get_logger(__name__)
 
@@ -27,7 +30,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # Files whose changes mean the session is still being recorded or processed.
 ACTIVITY_FILES = ("audio/audio.pcm", "video/video.ts", "transcript/segments.json",
-                  "structured/extractions.json", "structured/aggregate.json")
+                  "structured/progress.json")
 # Files written once a session is over: the server's exports at stop_session, and the
 # extraction service's mark that it has extracted the last segment.
 END_FILES = ("audio/audio.mp3", "video/video.mp4", "structured/extractions.done")
@@ -65,7 +68,7 @@ class Sessions:
             "started": started,
             "updated": updated,
             "live": live,
-            "has_aggregate": (path / "structured" / "aggregate.json").is_file(),
+            "has_epcr": (path / "structured" / "progress.json").is_file(),
         }
 
     def list(self) -> list[dict]:
@@ -76,17 +79,13 @@ class Sessions:
         return sorted((self.summary(p) for p in folders), key=lambda s: s["started"] or 0, reverse=True)
 
     def detail(self, path: Path) -> tuple[dict, str]:
-        """The session's summary with its aggregate, and an ETag for it."""
-        aggregate_path = path / "structured" / "aggregate.json"
+        """The session's summary with its ePCR, and an ETag for it."""
+        structured = path / "structured"
         summary = self.summary(path)
-        try:
-            raw = aggregate_path.read_text(encoding="utf-8")
-            aggregate = json.loads(raw)
-        except (FileNotFoundError, ValueError):
-            raw, aggregate = "", None  # not written yet (writes are atomic, so never half-written)
-        summary.pop("has_aggregate")
-        etag = f'"{hash((raw, summary["live"])) & 0xFFFFFFFFFFFF:x}"'
-        return {**summary, "aggregate": aggregate}, etag
+        epcr = build(structured)
+        summary.pop("has_epcr")
+        etag = f'"{hash((fingerprint(structured), summary["live"])) & 0xFFFFFFFFFFFF:x}"'
+        return {**summary, "epcr": epcr}, etag
 
 
 def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:

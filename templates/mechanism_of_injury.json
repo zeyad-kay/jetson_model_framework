@@ -1,0 +1,20 @@
+[
+    {
+        "segment": 2,
+        "extractions": [
+            {
+                "entity": "blunt trauma, single vehicle, noncollision, rolled or left the roadway",
+                "quotes": [
+                    {
+                        "text": "So mechanism, car, he was the driver, went off the road, no collision with another vehicle.",
+                        "time": 54.088
+                    },
+                    {
+                        "text": "Noncollision, single vehicle, blunt. Rolled or left the roadway, nobody's sure.",
+                        "time": 67.45
+                    }
+                ]
+            }
+        ]
+    }
+]

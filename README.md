@@ -86,16 +86,7 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `LLM_EXTRACTION_DRAIN_IDLE` | `30` | seconds `segments.json` must stay unchanged after a session ends before extraction stops; must exceed the ASR's end-of-session drain, or the last segment is missed |
 | `LLM_EXTRACTION_LINK` | `true` | attach ATC / ICD-10-PCS codes to extracted entities (`llm_extraction_service/terminology_linker.py`); needs a code index in `llm_extraction_service/terminology/index` that isn't in the repo, so set it to `false` until the index is in place |
 | `LLM_EXTRACTION_DIR` | *(not set: the `llm_extraction_service/` folder)* | the service's folder; the code index is read from `<LLM_EXTRACTION_DIR>/terminology/index` |
-| `LLM_EXTRACTION_PROMPTS_DIR` | *(not set: `<LLM_EXTRACTION_DIR>/prompts`)* | prompts: `separated/` (one model call per file), `_shared.yaml` for fragments they use |
-
-**LLM aggregation** (`LLM_AGGREGATION_`)
-
-| Setting | `.env.example` | Meaning |
-|---|---|---|
-| `LLM_AGGREGATION_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | aggregation model, run each time a segment is extracted |
-| `LLM_AGGREGATION_POLL_INTERVAL` | `0.5` | seconds between checks for new extraction records |
-| `LLM_AGGREGATION_DRAIN_TIMEOUT` | `600` | after a session ends, the aggregator waits for the extraction service to mark its extractions complete (`structured/extractions.done`); without that mark it gives up once `extractions.json` has been unchanged this many seconds |
-| `LLM_AGGREGATION_PROMPT` | *(not set: `llm_aggregation_service/prompts/aggregate.txt`)* | the aggregation prompt |
+| `LLM_EXTRACTION_PROMPTS_DIR` | *(not set: `<LLM_EXTRACTION_DIR>/prompts`)* | prompts: `separated/<category>.txt` (one prompt per category, named after it: one model call per prompt, given the category's earlier records and the new segment, and returning only what the new segment states; a file named after no category, or a category with no file, fails at startup; the demographics and mechanism of injury calls stop once those are complete), `_shared.yaml` for the fragments they use (a placeholder with no fragment fails at startup) |
 
 **Video** (`VIDEO_`)
 
@@ -151,7 +142,7 @@ docker compose down
 
 ```
 phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──▶ asr_service / llm_extraction_service /
-  │                           │                                 llm_aggregation_service / video_service
+  │                           │                                 video_service
   │                           │
   └──RTSP :8554──▶ MediaMTX ──┴──▶ ffmpeg ──▶ sessions/<id>/audio/audio.pcm, video/video.ts
 ```
@@ -170,10 +161,9 @@ phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──�
 |---|---|---|---|
 | `server` | the client's commands and RTSP stream | `audio/audio.pcm` → `audio.mp3`, `video/video.ts` → `video.mp4` | none (CPU-only; runs MediaMTX) |
 | `asr_service` | `audio/audio.pcm` | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | `nvidia/nemotron-3.5-asr-streaming-0.6b` |
-| `llm_extraction_service` | `transcript/segments.json` | `structured/extractions.json`, then `extractions.done` when the session's last segment is extracted | `Qwen/Qwen3-4B-Instruct-2507` |
-| `llm_aggregation_service` | `structured/extractions.json` | `structured/aggregate.json` and `aggregates/<segment>.json`, re-aggregated each time a segment is extracted | `Qwen/Qwen2.5-7B-Instruct` |
+| `llm_extraction_service` | `transcript/segments.json` | the ePCR as a log of per-segment records: `structured/<category>.json` (one file per category: `medications`, `interventions`, `vital_signs`, `mechanism_of_injury`, `demographics`, `medical_history`; `[{"segment", "extractions": [...]}, ...]`, a record for each segment that stated something new for the category; each validated against `llm_extraction_service/schema.py`, with each quote a `{"text", "time"}` object; medications are actions on administrations, a bolus given or an infusion started, each with an id, then updated by id: details stated later, a new rate, stopped), `medication_administrations.json` (each administration's current state, merged from those actions) and `progress.json` (the last segment taken in), then `extractions.done` when the session's last segment is in | `Qwen/Qwen3-4B-Instruct-2507` |
 | `video_service` | `video/video.ts` | `video/overlay.mp4` | `facebook/sam3` |
-| `dashboard` | `structured/aggregate.json` (read-only) | a web page on port 8080 | none (CPU-only) |
+| `dashboard` | `structured/<category>.json`, `medication_administrations.json` and `progress.json` (read-only) | a web page on port 8080 | none (CPU-only) |
 
 The server drives the services over unix sockets in `BRIDGE_DIR` with three commands:
 `queue_session` (work on a session, ending the current one first), `end_session` (finish the
@@ -186,10 +176,9 @@ current session's remaining input, then wait) and `ping` (health check, every
 ```
 server/                   control port, session lifecycle, MediaMTX + ffmpeg recording
 asr_service/              streaming speech recognition, segmented at sentence ends and pauses
-llm_extraction_service/   live ePCR extraction, per segment (prompts/, terminology_linker.py, terminology/index)
-llm_aggregation_service/  live ePCR aggregation of the segments extracted so far (prompts/aggregate.txt)
+llm_extraction_service/   live ePCR, extracted per segment (prompts/, terminology_linker.py, terminology/index)
 video_service/            SAM 3 video segmentation
-dashboard/                web dashboard of a session's ePCR timeline (server.py, static/)
+dashboard/                web dashboard of a session's ePCR timeline (server.py, epcr.py, static/)
 common/                   shared WorkerService, bridge, config, logging, file helpers
 tests/                    mock streaming client (e2e/), per-service integration tests (integration/), their Dockerfile
 sessions/                 one folder per session (created at runtime)
@@ -199,32 +188,42 @@ logs/                     one log file per service
 ## Dashboard
 
 The `dashboard` service serves a web page of a session's ePCR timeline at
-`http://<jetson-ip>:8080/` (`DASHBOARD_PORT`). It reads `structured/aggregate.json`, the
-aggregation service's output, and re-reads it every 2 s, so the page follows a session as it
-is recorded. It only reads the sessions folder, and the page loads nothing from the internet.
+`http://<jetson-ip>:8080/` (`DASHBOARD_PORT`). It reads the extraction service's output in
+`structured/` (each `<category>.json`, `medication_administrations.json` and `progress.json`)
+and re-reads it every 2 s, so the page follows a session as it is recorded.
+`dashboard/epcr.py` builds the page's ePCR from them, without a model: each item is placed at
+its earliest quote, demographics show their latest statement and the mechanism of injury its
+latest description, and medications come from their administrations, so an infusion is a bar
+from when it was started to when it was stopped (or to the latest segment while it runs).
+It only reads the sessions folder, and the page loads nothing from the internet.
 
 - **Header:** sex and age (`demographics`), the mechanism of injury with when it was reported
   and its first quote, and whether the session is **Live** or **Ended**. A session has ended
   once the server has exported its `audio.mp3` or `video.mp4`, or the extraction service has
   written `extractions.done`; otherwise it is live while its files keep changing
   (`DASHBOARD_LIVE_WINDOW`).
-- **Injuries:** the general notes that mention an injury (a keyword match on words like
-  *injury*, *trauma*, *laceration*, *swelling*, *pain*), numbered. Clicking one finds it on
-  the timeline. The pipeline has no structured injury data yet, so there is no body map.
-- **Patient timeline:** three lanes on one time axis. *Patient history* is the general notes,
-  *Medications* the aggregated medication events (an infusion is a bar from start to end, with
-  a dot at each rate change), *Interventions* the interventions. Times are elapsed from the
+- **Injuries:** the medical history that mentions an injury (a keyword match on words like
+  *injury*, *trauma*, *laceration*, *swelling*, *pain*), numbered. A front and back body map
+  marks each injury where its note names a body part (*left chest*, *shoulders*, *femur*…),
+  with a numbered badge per spot; a chip per injury names its locations, and the list below
+  gives every injury note. The pipeline has no structured injury locations, so a note that
+  names no body part has no spot, and a side that isn't named marks both. Clicking a badge,
+  chip or list item finds the note on the timeline.
+- **Patient timeline:** four lanes on one time axis. *Medical history* is the medical history,
+  *Vital signs* the vital-sign readings, grouped into one event per set of readings taken
+  together (a reading within 20 s of the last, until a vital repeats), *Medications* the medication administrations (a bolus is an event, an infusion a bar from
+  start to stop, with a dot at each rate change), *Interventions* the interventions. Times are elapsed from the
   start of the recording. Hover or focus an event for its details, every time it was
   mentioned and the transcript quotes; a lane labels at most three rows of events, and the
   rest show as dots with the same details.
 - **Controls:** the session picker (by default the newest live session, else the newest with
-  an aggregate; `?session=<id>` in the URL picks one), the visible span (10 min, 20 min, 1 h,
+  an extraction; `?session=<id>` in the URL picks one), the visible span (10 min, 20 min, 1 h,
   All), and **Follow**, which keeps the latest events in view and turns off when you scroll
   back.
 
 The server is `dashboard/server.py` (standard library only); the page is `dashboard/static/`.
 Its JSON is also available directly: `GET /api/sessions` lists the sessions, and
-`GET /api/sessions/<id>` returns one session with its aggregate.
+`GET /api/sessions/<id>` returns one session with its ePCR (`epcr`).
 
 ## Testing the live stack
 
@@ -235,8 +234,7 @@ URL in real time, then stops the session. It runs in its own container (`tests/D
 because the Jetson's own ffmpeg can't publish RTSP or decode MP3.
 
 Unlike the [integration tests](#integration-tests), this goes through the server to every
-service at once, so it is the one test of the handoffs between them (ASR to extraction to
-aggregation). Start the stack and build the test image first ([Setup](#setup), step 2).
+service at once, so it is the one test of the handoffs between them (ASR to extraction). Start the stack and build the test image first ([Setup](#setup), step 2).
 
 ### Run the client
 
@@ -267,7 +265,7 @@ Everything lands in `sessions/<session_id>/`:
 | `audio/audio.pcm` grows | `audio/audio.mp3` |
 | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | — |
 | `video/video.ts` grows, plus the video service's output | `video/video.mp4` |
-| `structured/extractions.json`, updated as each segment closes; `aggregate.json` and `aggregates/<segment>.json` after each extraction | the last segment's extraction and aggregate, about 30 s later (`LLM_EXTRACTION_DRAIN_IDLE`), then `extractions.done` |
+| `structured/<category>.json`, `medication_administrations.json` and `progress.json`, updated as each segment closes | the last segment's update, about 30 s later (`LLM_EXTRACTION_DRAIN_IDLE`), then `extractions.done` |
 
 ```bash
 ls -R sessions/<session_id>
@@ -277,7 +275,7 @@ tail -f logs/*.log                                        # service logs
 
 The ASR closes a segment at the first sentence end after 20 s of audio
 (`ASR_SEGMENT_MIN_LENGTH`), or after 20 s of silence (`ASR_SEGMENT_PAUSE`), so
-`segments.json` and `extractions.json` may stay empty until a short stream ends.
+`segments.json` and the `structured/` files may stay empty until a short stream ends.
 
 ### Shorter runs with clips
 
@@ -318,8 +316,7 @@ finish and checks its output. Shared code is in `tests/integration/harness.py`.
 |---|---|---|---|
 | `docker compose run --rm asr_test` | `asr_service` | `asr/inputs/audio.mp3`, in real time | transcript word error rate against the ground truth (at most `--max-wer`, 0.15 by default) and segment boundaries |
 | `docker compose run --rm video_test` | `video_service` | `video/inputs/video.mp4`, in real time | `video/overlay.mp4` was written |
-| `docker compose run --rm llm_extraction_test` | `llm_extraction_service` | `extraction/inputs/segments.json`, one segment every 5 s (`--interval`) | one well-formed record per segment, times inside their segment, `extractions.done`; then a score report against `extraction/ground_truth/` |
-| `docker compose run --rm llm_aggregation_test` | `llm_aggregation_service` | `aggregation/inputs/<segment>.json`, one record at a time, each after the previous one's aggregate | an aggregate per segment, equal to `aggregation/ground_truth/<segment>.json` outside medications; medication events well formed |
+| `docker compose run --rm llm_extraction_test` | `llm_extraction_service` | `extraction/inputs/segments.json`, one segment every 5 s (`--interval`) | a `<category>.json` of records per category (each for an input segment, in order, not empty), every quote time inside its record's segment, a unique id for each medication administration and an earlier one for each update, `medication_administrations.json` with each once, `progress.json` naming the last segment, `extractions.done`; then a report of the extractions' score against `extraction/ground_truth/` |
 
 ### Run a test
 
@@ -358,7 +355,6 @@ Options go after the test's name, e.g. `docker compose run --rm llm_extraction_t
 | `llm_extraction_test` | `--interval <s>` | seconds between segments; `0` writes them all at once |
 | `llm_extraction_test` | `--score /sessions/<id>` | only log the score report for an earlier session; the service isn't contacted |
 | `llm_extraction_test` | `--ground-truth <dir>` | score against other ground truth |
-| `llm_aggregation_test` | `--no-lockstep --interval <s>` | write records on a timer instead of waiting for each aggregate; the aggregator then skips the lists it falls behind on |
 
 Paths are inside the test container, where `tests/integration/` is at `/tests/integration/`
 and the sessions folder at `/sessions/`.
@@ -366,20 +362,18 @@ and the sessions folder at `/sessions/`.
 ### The extraction score
 
 The model's extractions aren't expected to reproduce the ground truth exactly, so the score is
-a report and never fails the test. A model item matches a ground-truth item of the same
-segment and category when their quotes share at least half their words (one to one, best
-overlaps first); an item without quotes matches one with the same entity instead. For each
-category it prints the ground-truth and model counts, the matches, precision and recall, and
-how often matched items agree on the entity and on the value (vital signs, demographics) or
+a report and never fails the test. It compares all the extracted items with the ground truth,
+`ground_truth/<category>.json`, which holds records in the same shape as the service's output.
+An item matches another of the same category when their quotes share at least half their words
+(preferring one with the same entity, since one utterance often gives several items); an item
+without quotes matches one with the same entity instead. The score counts
+coverage: recall is the share of ground-truth items some extracted item matches, precision the
+share of extracted items that match some ground-truth item. For each category it also prints
+how often a matched pair agrees on the entity and on the value (vital signs, demographics) or
 dose (medications).
 
-### Ground truth
-
-`aggregation/inputs/` is a copy of `extraction/ground_truth/`: the aggregation test is fed the
-records the extraction service should produce. Copy them again after editing the extraction
-ground truth. The aggregation test compares every category except medications exactly,
-because only medications go through the model; the rest is merged deterministically.
+### What they don't cover
 
 The integration tests check one service each. The handoff between the services (ASR to
-extraction to aggregation) is only exercised by the full stack: see
+extraction) is only exercised by the full stack: see
 [Testing the live stack](#testing-the-live-stack).

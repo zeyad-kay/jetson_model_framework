@@ -10,7 +10,8 @@
   --text-secondary: #b4bcc8;
   --text-muted: #7d8794;
   /* Lane identity (validated with the dataviz palette checker, dark mode, on --surface-1). */
-  --lane-history: #aab3bf;       /* neutral */
+  --lane-notes: #aab3bf;         /* neutral */
+  --lane-vitals: #d95926;        /* categorical slot 2, dark step */
   --lane-medications: #3987e5;   /* categorical slot 1, dark step */
   --lane-interventions: #199e70; /* categorical slot 3, dark step */
   /* Status: live / ended. */
@@ -101,22 +102,54 @@ h2 {
 
 /* ── injuries ───────────────────────────────────────────────────────────── */
 .injuries .panel { overflow-y: auto; padding: 16px 18px; }
-.panel-note { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); }
-.injury-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.panel-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* Body map: a front and a back figure, injuries as numbered badges on leader lines. */
+.body-map { margin: 0; padding: 10px 6px 8px; background: #0b0e13; border-radius: 10px; }
+.body-map svg { display: block; width: 100%; max-height: 46vh; overflow: visible; }
+.body-map .figure .limb { stroke-linecap: round; stroke-linejoin: round; }
+.body-map .spine { stroke: #4a5668; stroke-width: 1; fill: none; }
+.body-map .leader { stroke: var(--injury); stroke-width: 1.2; }
+.body-map .spot { fill: #f6d0cf; stroke: var(--injury); stroke-width: 1.2; }
+.body-map .badge { cursor: pointer; outline: none; }
+.body-map .badge circle { fill: var(--injury); stroke: #f6d0cf; stroke-width: 1.2; }
+.body-map .badge text {
+  fill: #fff; font-size: 8.5px; font-weight: 700; text-anchor: middle; dominant-baseline: central;
+  pointer-events: none;
+}
+.body-map .badge:hover circle, .body-map .badge:focus-visible circle, .body-map .badge.hl circle { stroke: #fff; stroke-width: 2; }
+.body-map .leader.hl { stroke-width: 2; }
+.body-map .spot.hl { fill: #fff; }
+.body-map figcaption {
+  display: grid; grid-template-columns: 1fr 1fr; margin-top: 6px;
+  font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary); text-align: center;
+}
+
+.injury-chips { list-style: none; margin: 12px 0 0; padding: 0 0 14px; display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--grid); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px 4px 5px; font-size: 14px; cursor: pointer;
+  background: #2a1719; border: 1px solid #4a2326; border-radius: 999px;
+}
+.chip:hover, .chip:focus-visible, .chip.hl { border-color: var(--injury); outline: none; }
+
+.num {
+  display: grid; place-items: center; flex: none;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--injury); color: #fff; font-size: 12px; font-weight: 700;
+}
+
+.injury-list { list-style: none; margin: 4px 0 0; padding: 0; }
 .injury {
-  display: grid; grid-template-columns: auto 1fr; gap: 4px 10px;
-  width: 100%; padding: 12px; text-align: left; cursor: pointer;
-  background: #1a1f28; border: 1px solid var(--border); border-radius: 10px;
+  display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: start;
+  width: calc(100% + 16px); padding: 12px 8px; margin: 0 -8px; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 8px;
 }
-.injury:hover, .injury:focus-visible { border-color: #3a4656; outline: none; }
-.injury .num {
-  grid-row: span 2;
-  display: grid; place-items: center;
-  width: 24px; height: 24px; border-radius: 50%;
-  background: var(--injury); color: #fff; font-size: 13px; font-weight: 700;
-}
-.injury .text { font-size: 15px; }
-.injury .when { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.injury-list li + li { border-top: 1px solid var(--grid); }
+.injury:hover, .injury:focus-visible, .injury.hl { background: #1a1f28; outline: none; }
+.injury .num { margin-top: 1px; }
+.injury .text { font-size: 16px; }
+.injury .when { grid-column: 2; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 /* ── timeline ───────────────────────────────────────────────────────────── */
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }

@@ -33,9 +33,33 @@
     <section class="injuries" aria-labelledby="injuries-heading">
       <h2 id="injuries-heading">Injuries</h2>
       <div class="panel">
-        <p class="panel-note">Injury-related general notes (keyword matches)</p>
+        <figure class="body-map">
+          <svg viewBox="0 0 262 226" role="img" aria-label="Body map of injury locations, front and back">
+            <defs>
+              <linearGradient id="body-fill" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="222">
+                <stop offset="0" stop-color="#93a3b8"/><stop offset="1" stop-color="#5c6a7d"/>
+              </linearGradient>
+              <g id="body-figure" class="figure" fill="url(#body-fill)">
+                <ellipse cx="50" cy="15" rx="10" ry="12"/>
+                <path d="M45 24h10v12H45z"/>
+                <path d="M29 38C38 34 62 34 71 38C74 40 75 46 74 52L70 70C68 82 66 92 67 104L69 118C60 124 40 124 31 118L33 104C34 92 32 82 30 70L26 52C25 46 26 40 29 38Z"/>
+                <path class="limb" d="M30 42L23 80L19 112M70 42L77 80L81 112" fill="none" stroke="url(#body-fill)" stroke-width="9"/>
+                <path class="limb" d="M41 116L42 164L42 204M59 116L58 164L58 204" fill="none" stroke="url(#body-fill)" stroke-width="13"/>
+                <ellipse cx="18" cy="120" rx="4.5" ry="7"/><ellipse cx="82" cy="120" rx="4.5" ry="7"/>
+                <ellipse cx="41" cy="211" rx="6" ry="3.5"/><ellipse cx="59" cy="211" rx="6" ry="3.5"/>
+              </g>
+            </defs>
+            <use href="#body-figure" x="14"/>
+            <use href="#body-figure" x="146"/>
+            <path class="spine" d="M196 40V110"/>
+            <g id="body-marks"></g>
+          </svg>
+          <figcaption><span>Front</span><span>Back</span></figcaption>
+        </figure>
+        <ul class="injury-chips" id="injury-chips"></ul>
         <ol class="injury-list" id="injury-list"></ol>
         <p class="empty" id="injuries-empty">No injuries mentioned yet.</p>
+        <p class="panel-note">Injury-related medical history (keyword matches); body locations are read from its text.</p>
       </div>
     </section>
 
@@ -58,7 +82,7 @@
           <div class="lanes" id="lanes"></div>
         </div>
         <div class="axis-wrap"><div class="axis" id="axis"></div></div>
-        <p class="empty timeline-empty" id="timeline-empty">Waiting for the first aggregate…</p>
+        <p class="empty timeline-empty" id="timeline-empty">Waiting for the first extraction…</p>
       </div>
     </section>
   </main>

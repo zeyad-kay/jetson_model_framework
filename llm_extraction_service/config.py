@@ -18,7 +18,7 @@ class Config:
     # Hugging Face id of the extraction model (one run per segment).
     extract_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     # Attach ATC / ICD-10-PCS codes to extracted entities; needs the code index in
-    # llm_extraction_service/terminology/index. The aggregator service groups medications by ATC name.
+    # llm_extraction_service/terminology/index. The dashboard names medications by their ATC concept.
     link: bool = True
     # How often segments.json is checked for new segments, in seconds.
     poll_interval: float = 0.5
