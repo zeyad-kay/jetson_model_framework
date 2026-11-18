@@ -6,7 +6,7 @@ structured/medication_administrations.json, each medication administration's cur
 (see llm_extraction_service/schema.py). This reads them into the shape the page expects:
 
     {"medications": [...], "interventions": [...], "vital_signs": [...], "demographics": [...],
-     "mechanism_of_injury": [...], "medical_history": [...]}
+     "mechanism_of_injury": [...], "medical_history": [...], "patient_condition": [...]}
 
 Quotes become their text, and an item gets "time" (its earliest quote, seconds from the start)
 and "times" (all of its quotes'). Demographics keep the latest statement of each, and the
@@ -20,9 +20,11 @@ from pathlib import Path
 from typing import Any
 
 CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury",
-              "demographics", "medical_history")
+              "demographics", "medical_history", "patient_condition")
 HISTORY_KINDS = {"family_history": "Family history", "patient_history": "Patient history",
                  "comorbidity": "Comorbidity"}
+CONDITION_KINDS = {"complaint": "Complaint", "mental_status": "Mental status", "finding": "Finding",
+                   "suspected_injury": "Suspected injury"}
 
 
 def read_json(path: Path):
@@ -135,6 +137,9 @@ def build(structured: Path) -> dict | None:
     history = [{**h, "note": (h["quotes"] or [""])[0], "kind": HISTORY_KINDS.get(h.get("entity"), h.get("entity"))}
                for h in _items(raw["medical_history"])]
 
+    condition = [{**c, "kind": CONDITION_KINDS.get(c.get("entity"), c.get("entity"))}
+                 for c in _items(raw["patient_condition"])]
+
     interventions = _items(raw["interventions"])
 
     return {
@@ -144,6 +149,7 @@ def build(structured: Path) -> dict | None:
         "demographics": list(latest.values()),
         "mechanism_of_injury": mechanism,
         "medical_history": history,
+        "patient_condition": condition,
     }
 
 

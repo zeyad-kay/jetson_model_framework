@@ -33,6 +33,7 @@
     <section class="injuries" aria-labelledby="injuries-heading">
       <h2 id="injuries-heading">Injuries</h2>
       <div class="panel">
+        <div class="injury-summary">
         <figure class="body-map">
           <svg viewBox="0 0 262 226" role="img" aria-label="Body map of injury locations, front and back">
             <defs>
@@ -59,7 +60,26 @@
         <ul class="injury-chips" id="injury-chips"></ul>
         <ol class="injury-list" id="injury-list"></ol>
         <p class="empty" id="injuries-empty">No injuries mentioned yet.</p>
-        <p class="panel-note">Injury-related medical history (keyword matches); body locations are read from its text.</p>
+        <p class="panel-note">Complaints, findings and suspected injuries from the patient condition; body locations are read from their names and body sites.</p>
+        </div>
+
+        <div class="wounds" aria-labelledby="wounds-heading">
+          <div class="wounds-head">
+            <h3 id="wounds-heading">Wound images</h3>
+            <span class="wound-count" id="wound-count"></span>
+          </div>
+          <div class="wound-stage" id="wound-stage" tabindex="0" aria-label="Wound images; use the left and right arrow keys to browse">
+            <a class="wound-link" id="wound-link" target="_blank" rel="noopener" hidden><img id="wound-img" alt=""></a>
+            <button type="button" class="wound-nav prev" id="wound-prev" aria-label="Previous wound image" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <button type="button" class="wound-nav next" id="wound-next" aria-label="Next wound image" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+            </button>
+            <p class="empty" id="wounds-empty">No wound images yet.</p>
+          </div>
+          <div class="wound-caption" id="wound-caption"></div>
+        </div>
       </div>
     </section>
 
@@ -85,6 +105,24 @@
         <p class="empty timeline-empty" id="timeline-empty">Waiting for the first extraction…</p>
       </div>
     </section>
+
+    <div class="side">
+      <section class="history" aria-labelledby="history-heading">
+        <h2 id="history-heading">Medical history</h2>
+        <div class="panel">
+          <div id="history-groups"></div>
+          <p class="empty" id="history-empty">No medical history yet.</p>
+        </div>
+      </section>
+
+      <section class="latest-vitals" aria-labelledby="latest-vitals-heading">
+        <h2 id="latest-vitals-heading">Latest vital signs</h2>
+        <div class="panel">
+          <div class="vital-tiles" id="vital-tiles"></div>
+          <p class="empty" id="vitals-empty">No vital signs yet.</p>
+        </div>
+      </section>
+    </div>
   </main>
 
   <div class="tooltip" id="tooltip" role="tooltip" hidden></div>

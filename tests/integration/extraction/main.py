@@ -23,14 +23,17 @@ left and waits LLM_EXTRACTION_DRAIN_IDLE seconds for more), and checks:
 
 Then it logs a score that never fails the test. It compares all the extracted items
 with extraction/ground_truth/<category>.json, which holds records like the service's
-(segment numbers follow inputs/segments.json): an item matches when their quotes
+(segment numbers follow inputs/segments.json), and medications by administration, from
+ground_truth/medication_administrations.json (schema.merge_medications of its
+medications.json), as the service writes them: an item matches when their quotes
 overlap (the words of a quote pair, Jaccard >= 0.5), or, where either has no quotes,
-when the entity is the same. The score counts coverage, not one-to-one matches: per
+when the kind is the same. The score counts coverage, not one-to-one matches: per
 category, the ground-truth items some extracted item matches (recall), the extracted
 items that match some ground-truth item (precision), and how often a matched pair
-agrees on the entity and on the value (vital signs, demographics: their numbers, or
-for sex its words) or dose (medications, scored by administration: each one's merged
-state, with the quotes of all its actions). Empty items are ignored. Unparseable replies
+agrees on the kind (KIND_FIELDS: the entity, a medication's standard name, an
+intervention's category) and on the value (vital signs, demographics: their numbers,
+or for sex its words; medications: the dose, each administration's merged state, with
+the quotes of all its actions). Empty items are ignored. Unparseable replies
 and the service's validation errors (invalid items and quotes not found in the
 transcript, both dropped) are reported from its log.
 
@@ -63,10 +66,14 @@ GROUND_TRUTH = HERE / "ground_truth"
 
 # The categories the service writes a <category>.json for (llm_extraction_service/model.py);
 # Each a list of items, in the service's output and in the ground truth.
-CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury", "demographics", "medical_history")
+CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury", "demographics", "medical_history",
+              "patient_condition")
 
 # Scoring: quotes whose words overlap at least this much (Jaccard) count as the same mention.
 QUOTE_MATCH = 0.5
+# The field naming each category's kind of item, compared for matched items and preferred when
+# matching: the entity, except where it is free text and another field is the fixed one.
+KIND_FIELDS = {"medications": "standard_name", "interventions": "category"}
 # The field holding each category's value, compared for matched items (None: no single value).
 VALUE_FIELDS = {"medications": ("dose", "dose_unit"), "vital_signs": ("value",), "demographics": ("value",)}
 
@@ -170,30 +177,31 @@ def quote_overlap(a: dict, b: dict) -> float:
     return best
 
 
-def name(item: dict) -> frozenset[str]:
-    """The words naming an item: its entity, or a general note's text."""
-    return words(item.get("entity") or item.get("note"))
+def name(item: dict, category: str = "") -> frozenset[str]:
+    """The words naming an item's kind (KIND_FIELDS, else its entity)."""
+    return words(item.get(KIND_FIELDS.get(category, "entity")))
 
 
 def has_quotes(item: dict) -> bool:
     return any(words(q) for q in quotes(item))
 
 
-def scorable(item: dict) -> bool:
+def scorable(item: dict, category: str = "") -> bool:
     """False for empty items, e.g. a mechanism_of_injury of {"entity": "", "quotes": []}."""
-    return bool(name(item) or has_quotes(item))
+    return bool(name(item, category) or has_quotes(item))
 
 
-def best_match(item: dict, pool: list[dict]) -> dict | None:
-    """The item of pool whose quotes overlap item's (at least QUOTE_MATCH), preferring one with
-    the same entity name (one utterance often gives several items, e.g. a set of vitals), then
-    the largest overlap; where either has no quotes, one with the same entity name instead.
-    None if there is none."""
-    candidates = [((name(item) == name(p), overlap), i) for i, p in enumerate(pool)
+def best_match(item: dict, pool: list[dict], category: str = "") -> dict | None:
+    """The item of pool whose quotes overlap item's (at least QUOTE_MATCH), preferring one of
+    the same kind (one utterance often gives several items, e.g. a set of vitals), then the
+    largest overlap; where either has no quotes, one of the same kind instead. None if there
+    is none."""
+    kind = name(item, category)
+    candidates = [((kind == name(p, category), overlap), i) for i, p in enumerate(pool)
                   if (overlap := quote_overlap(item, p)) >= QUOTE_MATCH]
     if candidates:
         return pool[max(candidates)[1]]
-    return next((p for p in pool if not (has_quotes(item) and has_quotes(p)) and name(item) and name(item) == name(p)), None)
+    return next((p for p in pool if not (has_quotes(item) and has_quotes(p)) and kind and kind == name(p, category)), None)
 
 
 def same(a: dict, b: dict, fields: tuple[str, ...]) -> bool:
@@ -214,25 +222,25 @@ def score(extractions: dict, truth_dir: Path) -> None:
         return
     truth = load_extractions(truth_dir)
     log.info(f"score of the extractions against {truth_dir}:")
-    log.info(f"  {'category':<20} {'truth':>5} {'found':>5} {'extr':>5} {'suppd':>5} {'prec':>5} {'recall':>6} {'entity':>7} {'value':>6}")
+    log.info(f"  {'category':<20} {'truth':>5} {'found':>5} {'extr':>5} {'suppd':>5} {'prec':>5} {'recall':>6} {'kind':>5} {'value':>6}")
     totals = [0, 0, 0, 0]
     for c in CATEGORIES:
-        t = [it for it in extracted(truth, c) if scorable(it)]
-        g = [it for it in extracted(extractions, c) if scorable(it)]
-        pairs = [(it, m) for it in t if (m := best_match(it, g)) is not None]
-        supported = sum(best_match(it, t) is not None for it in g)
-        same_entity = sum(name(a) == name(b) for a, b in pairs)
+        t = [it for it in extracted(truth, c) if scorable(it, c)]
+        g = [it for it in extracted(extractions, c) if scorable(it, c)]
+        pairs = [(it, m) for it in t if (m := best_match(it, g, c)) is not None]
+        supported = sum(best_match(it, t, c) is not None for it in g)
+        same_kind = sum(name(a, c) == name(b, c) for a, b in pairs)
         same_value = sum(same(a, b, VALUE_FIELDS[c]) for a, b in pairs) if c in VALUE_FIELDS else 0
         totals = [totals[0] + len(t), totals[1] + len(pairs), totals[2] + len(g), totals[3] + supported]
         log.info(f"  {c:<20} {len(t):>5} {len(pairs):>5} {len(g):>5} {supported:>5} {ratio(supported, len(g)):>5}"
                  f" {ratio(len(pairs), len(t)):>6}"
-                 f" {ratio(same_entity, len(pairs)):>7}"
+                 f" {ratio(same_kind, len(pairs)):>5}"
                  f" {ratio(same_value, len(pairs)) if c in VALUE_FIELDS else '-':>6}")
     log.info(f"  {'all':<20} {totals[0]:>5} {totals[1]:>5} {totals[2]:>5} {totals[3]:>5}"
              f" {ratio(totals[3], totals[2]):>5} {ratio(totals[1], totals[0]):>6}")
     log.info("  (found: truth items some extracted item overlaps; extr: extracted items; suppd: extracted"
-             " items that overlap some truth item; prec: suppd / extr, recall: found / truth; entity, value: share of found items"
-             " whose best match agrees)")
+             " items that overlap some truth item; prec: suppd / extr, recall: found / truth; kind, value: share of found items"
+             " whose best match agrees on the kind (entity; medications: standard name; interventions: category), and on the value)")
 
 
 def ratio(n: int, d: int) -> str:

@@ -170,16 +170,17 @@ class QwenExtractor(LLMModel):
         "mechanism_of_injury": True,
         "demographics": True,
         "medical_history": True,
+        "patient_condition": True,
     }
     # Segments in a row that must add nothing to a complete category before its calls stop.
     QUIET_SEGMENTS = 2
     # Categories checked against their dataclass in schema.py.
     VALIDATED = set(schema.CATEGORIES)
     # Fields the code adds after the model replies; left out of the earlier records the model is
-    # fed, so they look like what it reports. standard_name is too, except for medications,
-    # where the model reports it (elsewhere schema.py fills it in).
+    # fed, so they look like what it reports. standard_name is too, except for medications and
+    # patient_condition, where the model reports it (elsewhere schema.py fills it in).
     STATE_OMIT = ("time", "times", "atc", "icd10pcs", "rxnorm")
-    REPORTS_STANDARD_NAME = {"medications"}
+    REPORTS_STANDARD_NAME = {"medications", "patient_condition"}
 
     def __init__(
         self,

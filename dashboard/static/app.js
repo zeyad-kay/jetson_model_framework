@@ -12,10 +12,11 @@ const LABEL_GAP = 14;           // px between labels on the same row
 const ROW_H = 62;               // px per label row
 const STEM_MIN = 18;            // px of stem below the nearest row
 const MAX_ROWS = 3;             // label rows per lane; events beyond them get a dot only (details on hover)
-const INJURY_RE = /\b(injur\w*|trauma\w*|wound\w*|lacerat\w*|bruis\w*|fractur\w*|bleed\w*|blood in|swell\w*|swollen|pain\w*|deform\w*|contusion\w*|abrasion\w*|burn\w*|hematoma\w*|haematoma\w*)\b/i;
+// Patient condition kinds that go on the injuries panel (mental status doesn't).
+const INJURY_KINDS = new Set(["complaint", "finding", "suspected_injury"]);
 
 const LANES = [
-  { key: "notes", title: "Medical history", color: "var(--lane-notes)" },
+  { key: "condition", title: "Patient condition", color: "var(--lane-condition)" },
   { key: "vitals", title: "Vital signs", color: "var(--lane-vitals)" },
   { key: "medications", title: "Medications", color: "var(--lane-medications)" },
   { key: "interventions", title: "Interventions", color: "var(--lane-interventions)" },
@@ -26,6 +27,8 @@ const state = {
   sessionId: null,
   chosen: false,       // the viewer picked the session (or the URL named it): don't auto-switch
   etag: null,
+  woundName: null,     // the wound image shown
+  woundPinned: false,  // the viewer stepped back from the newest image: don't jump to new ones
   detail: null,        // the last /api/sessions/<id> reply
   windowSec: 1200,     // visible span; 0 = everything
   follow: true,        // keep the latest events in view
@@ -90,20 +93,43 @@ const VITAL_NAMES = {
   "temperature": "Temp", "glasgow coma scale": "GCS", "eye opening": "E", "verbal response": "V",
   "motor response": "M", "blood glucose": "BGL", "end tidal co2": "EtCO₂", "pain": "Pain",
   "mean arterial pressure": "MAP", "end-tidal carbon dioxide": "EtCO₂", "peak pressure": "Ppeak",
-  "body temperature": "Temp",
+  "body temperature": "Temp", "saturation": "SpO₂", "peak airway pressure": "Ppeak",
+  "glucose level": "BGL", "glucose": "BGL", "fraction of inspired oxygen": "FiO₂", "cuff pressure": "Cuff",
 };
+// The order of the latest vital signs panel; vitals not listed follow, in the order first read.
+const VITAL_ORDER = ["BP", "MAP", "HR", "SpO₂", "RR", "EtCO₂", "Temp", "GCS", "BGL", "Ppeak", "FiO₂"];
 const VITAL_GAP = 20; // s: a reading this close to the previous one belongs to the same set
 
 // Vital signs come in sets (BP, HR, SpO₂, RR… read out within seconds), so each set is one
 // event: a reading joins the current set while it is close in time and its vital isn't in it yet.
-function buildVitals(agg) {
-  const readings = asList(agg.vital_signs)
+function vitalReadings(agg) {
+  return asList(agg.vital_signs)
     .map((v) => {
       const name = String(v.standard_name || v.entity || "").toLowerCase().trim();
       return { t: v.time, name, short: VITAL_NAMES[name] || capitalize(v.entity || name), value: clean(v.value), v };
     })
     .filter((r) => isNum(r.t) && r.value)
     .sort((a, b) => a.t - b.t);
+}
+
+// The latest reading of each vital sign, for the side panel.
+function latestVitals(agg) {
+  const latest = new Map();
+  for (const r of vitalReadings(agg)) {
+    latest.delete(r.short); // re-insert, so vitals not in VITAL_ORDER keep their first-read order
+    latest.set(r.short, r);
+  }
+  const rank = (s) => (VITAL_ORDER.includes(s) ? VITAL_ORDER.indexOf(s) : VITAL_ORDER.length);
+  return [...latest.values()]
+    .sort((a, b) => rank(a.short) - rank(b.short))
+    .map((r) => ({
+      kind: "Vital sign", t: r.t, label: r.short, value: r.value, title: `${r.short} ${r.value}`,
+      details: [["Vital", r.v.standard_name || r.v.entity || r.name]], quotes: r.v.quotes, times: r.v.times,
+    }));
+}
+
+function buildVitals(agg) {
+  const readings = vitalReadings(agg);
   const sets = [];
   for (const r of readings) {
     const cur = sets[sets.length - 1];
@@ -122,10 +148,23 @@ function buildVitals(agg) {
 }
 
 function buildModel(agg) {
-  const notes = asList(agg.medical_history).map((n) => ({
-    kind: "Medical history", t: n.time, title: n.note || "", sub: n.kind || "",
+  // Medical history isn't on the timeline: it has its own panel, grouped by kind.
+  const history = asList(agg.medical_history).map((n) => ({
+    kind: "Medical history", t: n.time, group: n.kind || "Other",
+    title: (n.quotes || []).filter(Boolean).join(" ") || n.note || "",
     details: n.kind ? [["Kind", n.kind]] : [], quotes: n.quotes, times: n.times,
   }));
+  const condition = asList(agg.patient_condition).map((c) => {
+    const site = clean(c.body_site) || "";
+    const details = [];
+    if (c.kind) details.push(["Kind", c.kind]);
+    if (site) details.push(["Body site", site]);
+    return {
+      kind: "Patient condition", entity: c.entity, t: c.time, title: capitalize(c.standard_name || c.entity || ""),
+      sub: [c.kind, site].filter(Boolean).join(" · "), where: [c.standard_name, site].filter(Boolean).join(", "),
+      details, quotes: c.quotes, times: c.times,
+    };
+  });
   const vitals = buildVitals(agg);
 
   const meds = asList(agg.medications).map((m) => {
@@ -161,9 +200,9 @@ function buildModel(agg) {
     };
   });
 
-  const injuries = notes.filter((n) => INJURY_RE.test(n.title) || (n.quotes || []).some((q) => INJURY_RE.test(q)));
+  const injuries = condition.filter((c) => INJURY_KINDS.has(c.entity));
 
-  return { lanes: { notes, vitals, medications: meds, interventions }, injuries };
+  return { lanes: { condition, vitals, medications: meds, interventions }, injuries, history, latestVitals: latestVitals(agg) };
 }
 
 function maxTime(model) {
@@ -316,7 +355,7 @@ function renderInjuries(model) {
   // where badges would overlap; a leader line joins them.
   const columns = new Map(); // "front:-1" → [{ p, num, label, note }]
   model.injuries.forEach((note, i) => {
-    for (const r of injuryRegions(note.title)) {
+    for (const r of injuryRegions(note.where || note.title)) {
       for (const p of regionPoints(r)) {
         const centre = FIG_X[r.region.view] + 50;
         let dir = p.x > centre + 1 ? 1 : p.x < centre - 1 ? -1 : 0;
@@ -350,7 +389,7 @@ function renderInjuries(model) {
 
   model.injuries.forEach((note, i) => {
     const num = String(i + 1);
-    const regions = injuryRegions(note.title);
+    const regions = injuryRegions(note.where || note.title);
     const where = regions.map((r, j) => (j && !/^[LR] /.test(r.label) ? r.label.toLowerCase() : r.label)).join(", ");
 
     if (regions.length) {
@@ -374,6 +413,98 @@ function renderInjuries(model) {
   });
   chips.hidden = !chips.children.length;
   $("injuries-empty").hidden = model.injuries.length > 0;
+}
+
+// ── medical history ─────────────────────────────────────────────────────────
+
+const HISTORY_ORDER = ["Patient history", "Comorbidity", "Family history"];
+
+function renderHistory(model) {
+  const box = $("history-groups");
+  box.replaceChildren();
+  const groups = new Map(HISTORY_ORDER.map((k) => [k, []]));
+  for (const item of [...model.history].sort((a, b) => (a.t ?? 1e12) - (b.t ?? 1e12))) {
+    if (!groups.has(item.group)) groups.set(item.group, []);
+    groups.get(item.group).push(item);
+  }
+  for (const [kind, items] of groups) {
+    if (!items.length) continue;
+    const group = el("div", "history-group");
+    const head = el("h3", "history-kind", kind);
+    head.append(el("span", "count", String(items.length)));
+    const list = el("ul", "history-list");
+    for (const item of items) {
+      const entry = el("div", "history-item");
+      entry.tabIndex = 0;
+      entry.append(el("span", "text", item.title), el("span", "when", fmtTime(item.t)));
+      attachTooltip(entry, item);
+      const li = el("li");
+      li.append(entry);
+      list.append(li);
+    }
+    group.append(head, list);
+    box.append(group);
+  }
+  $("history-empty").hidden = model.history.length > 0;
+}
+
+// ── wound images ────────────────────────────────────────────────────────────
+
+// The images a model predicts into <session>/video/wounds/, oldest first. The viewer shows the
+// newest and follows new ones as they arrive, until the arrows step back to an older one.
+function renderWounds() {
+  const list = asList(state.detail && state.detail.wounds);
+  let i = list.findIndex((w) => w.name === state.woundName);
+  if (!state.woundPinned || i < 0) i = list.length - 1;
+  const w = list[i];
+  state.woundName = w ? w.name : null;
+  const img = $("wound-img"), link = $("wound-link");
+  if (w && img.dataset.url !== w.url) {
+    img.src = w.url;
+    img.dataset.url = w.url;
+  }
+  if (w) {
+    img.alt = `Wound image ${i + 1} of ${list.length}`;
+    link.href = w.url;
+  }
+  link.hidden = !w;
+  $("wound-prev").hidden = $("wound-next").hidden = list.length < 2;
+  $("wound-prev").disabled = i <= 0;
+  $("wound-next").disabled = i >= list.length - 1;
+  $("wound-count").textContent = list.length ? `${i + 1} / ${list.length}` : "";
+  $("wound-caption").textContent = w ? `${w.name} · ${new Date(w.time * 1000).toLocaleTimeString()}` : "";
+  $("wounds-empty").hidden = !!w;
+}
+
+function stepWound(delta) {
+  const list = asList(state.detail && state.detail.wounds);
+  if (!list.length) return;
+  const i = Math.max(0, list.findIndex((w) => w.name === state.woundName));
+  const j = Math.min(list.length - 1, Math.max(0, i + delta));
+  state.woundName = list[j].name;
+  state.woundPinned = j < list.length - 1; // back on the newest: follow new ones again
+  renderWounds();
+}
+
+// ── latest vital signs ──────────────────────────────────────────────────────
+
+function renderLatestVitals(model) {
+  const box = $("vital-tiles");
+  box.replaceChildren();
+  for (const item of model.latestVitals) {
+    const tile = el("div", "vital-tile");
+    tile.tabIndex = 0;
+    // The number large, its unit small after it: "121 mmHg", "157/101", "97%", "9 (E2 V3 M4)".
+    const m = String(item.value).match(/^([-\d./]+%?)\s*(.*)$/);
+    const value = el("span", "value", m ? m[1] : item.value);
+    if (m && m[2]) value.append(el("span", "unit", m[2]));
+    const head = el("span", "head");
+    head.append(el("span", "label", item.label), el("span", "when", fmtTime(item.t)));
+    tile.append(head, value);
+    attachTooltip(tile, item);
+    box.append(tile);
+  }
+  $("vitals-empty").hidden = model.latestVitals.length > 0;
 }
 
 // ── timeline ────────────────────────────────────────────────────────────────
@@ -612,6 +743,9 @@ function render() {
   const model = buildModel(agg || {});
   renderHeader(agg, detail);
   renderInjuries(model);
+  renderHistory(model);
+  renderLatestVitals(model);
+  renderWounds();
   renderTimeline(model);
   $("timeline-empty").textContent = !detail ? "No session selected." : agg ? "Nothing on the timeline yet." : "Waiting for the first extraction…";
   $("timeline-empty").hidden = !!agg && Object.values(model.lanes).some((items) => items.length);
@@ -652,6 +786,8 @@ function selectSession(id, chosen) {
   state.chosen = chosen;
   state.etag = null;
   state.detail = null;
+  state.woundName = null;
+  state.woundPinned = false;
   setFollow(true);
   const url = new URL(location.href);
   if (chosen && id) url.searchParams.set("session", id); else url.searchParams.delete("session");
@@ -710,6 +846,14 @@ function init() {
     if (ignoreScroll) return; // the page's own scrolling, e.g. following new events
     hideTooltip();
     setFollow(scroll.scrollLeft + scroll.clientWidth >= scroll.scrollWidth - 4);
+  });
+  $("wound-prev").addEventListener("click", () => stepWound(-1));
+  $("wound-next").addEventListener("click", () => stepWound(1));
+  $("wound-stage").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      stepWound(e.key === "ArrowLeft" ? -1 : 1);
+    }
   });
   let resizeTimer = null;
   window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });

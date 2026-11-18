@@ -7,8 +7,9 @@ so an invalid one can't be built at all. An item's "entity" picks its class
 converting what it can ("111" -> 111, "M" -> "male") and raising ValidationError
 otherwise. Demographics is one record with a field per demographic, and is
 complete once every field is known. Medical history items all have the same
-fields, so they share one class, MedicalHistory, as the mechanism of injury has
-MechanismOfInjury.
+fields, so they share one class, MedicalHistory, as the patient's current condition
+(complaints, mental status, findings, suspected injuries) shares PatientCondition and the
+mechanism of injury has MechanismOfInjury.
 
 The module does two jobs for the extraction service:
   1. validate(category, reply) checks a category of the model's reply and gives
@@ -647,6 +648,35 @@ class MedicalHistory:
 
 
 @dataclass(kw_only=True)
+class PatientCondition:
+    """The patient's current condition, one item each: a complaint they report, their mental
+    status, an abnormal finding of the crew's assessment, or an injury the crew suspects. Its
+    standard_name is the condition in clinical terms ("jaw pain"), and body_site where it is,
+    when stated. The ENTITIES must match patient_condition.entities in prompts/_shared.yaml."""
+
+    ENTITIES: ClassVar[tuple[str, ...]] = ("complaint", "mental_status", "finding", "suspected_injury")
+
+    entity: str
+    standard_name: Optional[str] = None
+    body_site: Optional[str] = None
+    quotes: list[Quote]
+
+    def __post_init__(self):
+        self.entity = re.sub(r"[\s-]+", "_", self.entity.strip().lower())
+        if self.entity not in self.ENTITIES:
+            raise ValidationError(f"entity {self.entity!r} is not one of {', '.join(self.ENTITIES)}")
+        self.standard_name = self.standard_name or self.entity.replace("_", " ")
+        _check_quotes(self)
+
+    @classmethod
+    def from_dict(cls, d: Any, time_of: Optional[TimeOf] = None) -> "PatientCondition":
+        return _from_dict(cls, d, time_of)
+
+    def to_dict(self) -> dict:
+        return _to_dict(self)
+
+
+@dataclass(kw_only=True)
 class MechanismOfInjury:
     """How the injury happened, as one description."""
 
@@ -873,6 +903,7 @@ ENTITIES: dict[str, tuple[str, ...]] = {
     "demographics": tuple(DEMOGRAPHICS),
     "vital_signs": tuple(VITAL_SIGNS),
     "medical_history": MedicalHistory.ENTITIES,
+    "patient_condition": PatientCondition.ENTITIES,
 }
 CATEGORIES = (*ENTITIES, "mechanism_of_injury", "interventions", "medications")
 
@@ -920,6 +951,8 @@ def _parse(category: str, reply: Any, time_of: Optional[TimeOf]) -> tuple[Any, l
                 items.append(Intervention.from_dict(d, time_of))
             elif category == "medications":
                 items.append(_parse_medication(d, time_of))
+            elif category == "patient_condition":
+                items.append(PatientCondition.from_dict(d, time_of))
             else:
                 items.append(MedicalHistory.from_dict(d, time_of))
         except ValidationError as e:

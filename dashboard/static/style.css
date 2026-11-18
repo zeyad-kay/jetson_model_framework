@@ -10,10 +10,10 @@
   --text-secondary: #b4bcc8;
   --text-muted: #7d8794;
   /* Lane identity (validated with the dataviz palette checker, dark mode, on --surface-1). */
-  --lane-notes: #aab3bf;         /* neutral */
   --lane-vitals: #d95926;        /* categorical slot 2, dark step */
   --lane-medications: #3987e5;   /* categorical slot 1, dark step */
   --lane-interventions: #199e70; /* categorical slot 3, dark step */
+  --lane-condition: #c98500;     /* categorical slot 4, dark step */
   /* Status: live / ended. */
   --live: #3fbf6f;
   --live-bg: #0f2318;
@@ -37,7 +37,7 @@ button, select { font: inherit; color: inherit; }
 
 .monitor {
   display: grid;
-  grid-template-columns: minmax(250px, 1fr) minmax(0, 3fr);
+  grid-template-columns: minmax(250px, 1fr) minmax(0, 3fr) minmax(250px, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 20px 24px;
   height: 100vh;
@@ -101,7 +101,41 @@ h2 {
 .empty { color: var(--text-muted); margin: 0; }
 
 /* ── injuries ───────────────────────────────────────────────────────────── */
-.injuries .panel { overflow-y: auto; padding: 16px 18px; }
+/* The panel's top half is the injury summary, its bottom half the wound images. */
+.injuries .panel { display: flex; flex-direction: column; overflow: hidden; }
+.injury-summary { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+
+.wounds {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px 14px; border-top: 1px solid var(--border);
+}
+.wounds-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wounds-head h3 {
+  margin: 0; font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.wound-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wound-stage {
+  position: relative; flex: 1 1 0; min-height: 0; display: grid; place-items: center;
+  background: #0b0e13; border-radius: 10px; outline: none; overflow: hidden;
+}
+.wound-stage:focus-visible { box-shadow: 0 0 0 2px #4a5566; }
+.wound-link { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.wound-link img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.wound-nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 36px; height: 36px; padding: 0; cursor: pointer;
+  background: rgba(7, 9, 12, 0.72); border: 1px solid var(--border); border-radius: 50%;
+}
+.wound-nav.prev { left: 8px; }
+.wound-nav.next { right: 8px; }
+.wound-nav svg { width: 18px; height: 18px; fill: none; stroke: var(--text-primary); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.wound-nav:hover:not(:disabled), .wound-nav:focus-visible { border-color: var(--text-secondary); outline: none; }
+.wound-nav:disabled { opacity: 0.3; cursor: default; }
+.wound-caption {
+  min-height: 1.3em; font-size: 12px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .panel-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
 
 /* Body map: a front and a back figure, injuries as numbered badges on leader lines. */
@@ -150,6 +184,41 @@ h2 {
 .injury .num { margin-top: 1px; }
 .injury .text { font-size: 16px; }
 .injury .when { grid-column: 2; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ── right column: medical history over the latest vital signs ─────────── */
+.side { display: flex; flex-direction: column; gap: 20px; min-height: 0; min-width: 0; }
+.history, .latest-vitals { flex: 1 1 0; min-height: 0; }
+
+/* ── medical history ────────────────────────────────────────────────────── */
+.history .panel { overflow-y: auto; padding: 16px 18px; }
+.history-group + .history-group { margin-top: 18px; }
+.history-kind {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 4px;
+  font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary);
+}
+.history-kind .count { font-weight: 400; letter-spacing: 0; color: var(--text-muted); }
+.history-list { list-style: none; margin: 0; padding: 0; }
+.history-list li + li { border-top: 1px solid var(--grid); }
+.history-item {
+  display: grid; gap: 3px; padding: 10px 8px; margin: 0 -8px; border-radius: 8px; outline: none; cursor: default;
+}
+.history-item:hover, .history-item:focus-visible { background: #1a1f28; }
+.history-item .text { font-size: 15px; }
+.history-item .when { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* ── latest vital signs ─────────────────────────────────────────────────── */
+.latest-vitals .panel { overflow-y: auto; padding: 14px; }
+.vital-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+.vital-tile {
+  display: grid; gap: 4px; padding: 8px 12px 10px; border-radius: 10px; outline: none; cursor: default;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.vital-tile:hover, .vital-tile:focus-visible { border-color: #4a5566; }
+.vital-tile .label { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: var(--text-secondary); }
+.vital-tile .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.vital-tile .value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; overflow-wrap: anywhere; }
+.vital-tile .unit { margin-left: 4px; font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+.vital-tile .when { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 /* ── timeline ───────────────────────────────────────────────────────────── */
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
@@ -250,6 +319,9 @@ button.dot:hover, button.dot:focus-visible, button.dot.active { outline: 2px sol
   .mechanism { grid-column: 1 / -1; order: 3; }
   .session-picker { grid-column: 1 / -1; order: 4; }
   .timeline .panel { height: 70vh; }
-  .injuries .panel { max-height: 40vh; }
+  .history .panel { max-height: 40vh; }
+  .injury-summary { flex: none; max-height: 40vh; }
+  .wounds { flex: none; height: 45vh; }
+  .history, .latest-vitals { max-height: none; min-height: 0; }
   .timeline-controls { flex-wrap: wrap; }
 }

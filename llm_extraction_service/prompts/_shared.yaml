@@ -8,11 +8,13 @@
 #   vital_sign_fields.X  -> {systolic} {diastolic} {gcs_parts}
 #   mechanism_of_injury_fields.X -> {mechanism_description}
 #   intervention_fields.X -> {intervention_name} {intervention_details}
+#   patient_condition_fields.X -> {condition_name} {body_site}
 #   (every section named *_fields works the same way)
 #   instructions.X       -> {X}          ({extraction_inputs} {medication_inputs} {extraction_rules} {quote_rule})
 #   rendered blocks      -> {intervention_list} {intervention_categories}
-#                           {demographics_entities} {vital_signs_entities} {medical_history_entities}
+#                           {demographics_entities} {vital_signs_entities} {medical_history_entities} {patient_condition_entities}
 #                           {demographics_entity_list} {vital_signs_entity_list} {medical_history_entity_list}
+#                           {patient_condition_entity_list}
 #                           {medication_route_list}
 #
 # {intervention_list}  is built from intervention_categories, which must be exactly
@@ -38,6 +40,7 @@ definitions:
   demographics: the patient's age, sex, height, and weight
   general_notes: patient's past medical and family history, and chief complaint or any symptoms in response to the injury and responder's differential diagnosis
   medical_history: the patient's past medical history and medications, their family's medical history, and the conditions and symptoms the patient has besides the injury
+  patient_condition: the patient's current state as assessed during this encounter, from the injury and what it causes - the symptoms they report, their mental status, the abnormal findings of the crew's assessment, and the injuries the crew suspects
 
 # clinically relevant observations or cues in the scene
 
@@ -154,4 +157,17 @@ medical_history:
 # 10. Intervention fields — the interventions extractor; schema.py's Intervention
 intervention_fields:
   intervention_name: the procedure performed, in standard clinical terms ("endotracheal intubation", "intraosseous access", "transcutaneous pacing")
-  intervention_details: its details as stated, such as the device, size, site or settings ("size 8.0, 22 at the lips", "right tibia", "rate 70, 80 mA"); leave it out when none are stated
+  intervention_details: its details as stated, such as the device, size, site or settings ("size 8.0, 22 at the lips", "right tibia", "rate 70, 80 mA"), and for a scan or test its findings ("pericardial effusion, no tamponade"); leave it out when none are stated
+
+# 11. Patient condition — the patient condition extractor; the entities are the ones
+#     llm_extraction_service/schema.py's PatientCondition accepts
+patient_condition:
+  entities:
+    complaint: a symptom the patient reports, such as pain and where it is ("my hip hurts", "I feel sick")
+    mental_status: the patient's level of consciousness, orientation or behaviour, described in words ("drowsy", "combative", "only responds to pain", "doesn't know where she is")
+    finding: an abnormal sign the crew sees, hears or feels when assessing the patient ("a cut over the eye", "the wrist looks deformed", "bruising on the right flank")
+    suspected_injury: an injury, or an injured body region, the crew suspects or is treating as injured until cleared, including their working impression ("possible spinal injury", "query pelvic fracture")
+
+patient_condition_fields:
+  condition_name: the condition in standard clinical terms ("hip pain", "nausea", "altered level of consciousness", "laceration", "wrist deformity", "pelvic fracture")
+  body_site: the body part or region it is in, as stated ("right hip", "left forearm"); leave it out when none is stated or it is not in one place

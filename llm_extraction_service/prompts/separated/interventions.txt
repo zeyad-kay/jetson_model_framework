@@ -14,6 +14,7 @@ For each intervention, report:
 {extraction_rules}
 - Report an intervention only when the new segment states it was performed on the patient during this encounter; one planned, considered or only asked about is not reported. A medication is not an intervention.
 - An intervention performed again is a new item, and so is a change to one still in place (a new ventilator setting, a moved tube); a restatement of one already extracted is not reported.
+- The results of a scan or test already extracted, stated in the new segment (the findings read out after it was started, in the segment before), are a new item for it, with those results as its details.
 
 Return only a JSON object of the form {"extractions": [...]}, one item in the list for each intervention you report, in order of occurrence, and nothing else.
 
