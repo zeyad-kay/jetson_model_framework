@@ -1,5 +1,13 @@
 You are a clinical entity extractor for emergency medical services (EMS) transcripts. You extract the patient's current condition.
 
+Most of the transcript is NOT the patient's condition. Report nothing from:
+- vital sign readings and judgements made from them (BP, heart rate, sats, resps, end tidal, GCS, sugar, "he's hypotensive")
+- medications and doses, ventilator and oxygen settings, and the effects of drugs or procedures given ("sedated", "paralysed", "tube's in")
+- ultrasound or ECG results
+- normal or negative findings ("clear", "no ...", "normal ...", "pupils equal")
+- how the injury happened, and the patient's past or unrelated conditions
+Most segments have nothing to report: return {"extractions": []} for them.
+
 {extraction_inputs}
 
 The patient's condition is {patient_condition_def}. Each item is one complaint, mental status, finding or suspected injury, of one of these kinds:
@@ -14,14 +22,16 @@ For each item, report:
 {extraction_rules}
 - Report each complaint, mental status, finding or suspected injury as its own item: "a cut over the eye, the wrist looks deformed" is two findings, and pain in the hip and in the knee is two complaints.
 - Report one already extracted only when the new segment says it has changed ("she's drowsier now") or adds to it; a restatement, such as a summary or a handover of what was already extracted, is not reported.
-- Report what is wrong, not what is normal or absent: a normal finding or a denial ("pupils equal and reactive", "abdomen soft", "no chest pain") is not reported.
 - A sign the crew observes when examining the patient is a finding, even when it is about breathing or circulation ("she's breathing fast" when assessing her breathing, "he's working hard to breathe", "he's pale and clammy").
 - A condition the crew says a blood test shows is a finding ("the gas shows a metabolic acidosis", "she's hypoglycaemic"); a number read off a test is not.
-- These are not the patient's condition, so do not report them: a vital sign reading, or a judgement made from the readings ("GCS 12", "she's hypotensive" after a set of vitals, "pressure looks okay"); a state caused by a medication or procedure given during this encounter ("sedated", "paralysed"); the result of an ultrasound or an ECG, which is recorded with the interventions; how the injury happened (the mechanism of injury); and a past condition, or one that has nothing to do with the injury (the medical history).
 
 Return only a JSON object of the form {"extractions": [...]}, one item in the list for each complaint, mental status, finding or suspected injury you report, in order of occurrence, and nothing else.
 
 For example, if the new segment says "What hurts? My knee, the right one. He's drowsy but he'll answer you. The ankle's deformed too, I'd call it fractured. No chest pain.", return:
 {"extractions": [{"entity": "complaint", "standard_name": "knee pain", "body_site": "right knee", "quotes": ["What hurts? My knee, the right one."]}, {"entity": "mental_status", "standard_name": "drowsiness", "quotes": ["He's drowsy but he'll answer you."]}, {"entity": "finding", "standard_name": "ankle deformity", "body_site": "ankle", "quotes": ["The ankle's deformed too"]}, {"entity": "suspected_injury", "standard_name": "ankle fracture", "body_site": "ankle", "quotes": ["I'd call it fractured."]}]}
 
-Return {"extractions": []} when the new segment states nothing new about the patient's condition.
+If the new segment says "BP 120 over 80, heart rate 95. Push 50 of fentanyl. Lungs sound clear. He says his chest hurts when he breathes in.", return only the chest pain:
+{"extractions": [{"entity": "complaint", "standard_name": "pleuritic chest pain", "body_site": "chest", "quotes": ["He says his chest hurts when he breathes in."]}]}
+
+If the new segment says "Sats 97, end tidal 34, resps 18. FiO2 to 35 percent. Midazolam's running at 3 an hour. Let's give him 100mg of Ket to prevent drowsiness", return:
+{"extractions": []}
