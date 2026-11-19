@@ -12,11 +12,11 @@ For each demographic, report:
 - quotes: {quotes}
 
 {extraction_rules}
-- Report each demographic at most once, and one already extracted only when the new segment states it differently or more precisely ("about 80 kg", then "82 kg"); a restatement of the same value is not reported.
+- Report each demographic at most once, and one already extracted only when the new segment states it differently or more precisely ("about 56 kg", then "59 kg"); a restatement of the same value is not reported.
 
 Return only a JSON object of the form {"extractions": [...]}, one item in the list for each demographic you report, and nothing else.
 
-For example, if the new segment says "This is a 43-year-old male, about 80 kg", return:
-{"extractions": [{"entity": "age", "value": 43, "unit": "years", "quotes": ["a 43-year-old male, about 80 kg"]}, {"entity": "sex", "value": "male", "quotes": ["a 43-year-old male, about 80 kg"]}, {"entity": "weight", "value": 80, "unit": "kg", "quotes": ["a 43-year-old male, about 80 kg"]}]}
+For example, if the new segment says "This is a 21-year-old female, about 66 kg", return:
+{"extractions": [{"entity": "age", "value": 21, "unit": "years", "quotes": ["a 21-year-old female, about 66 kg"]}, {"entity": "sex", "value": "female", "quotes": ["21-year-old female, about 66 kg"]}, {"entity": "weight", "value": 66, "unit": "kg", "quotes": ["a 21-year-old female, about 66 kg"]}]}
 
 Return {"extractions": []} when the new segment states no new demographic.
