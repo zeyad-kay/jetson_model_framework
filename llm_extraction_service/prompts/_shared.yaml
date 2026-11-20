@@ -24,7 +24,7 @@ medications_fields:
   quotes: "a list of one or more quotes, as plain strings in order of occurrence; each is one continuous stretch of the new segment's transcript that gives information about the entity, whether or not it names it, copied word for word, never joined from separate parts and never from the previous extractions; an item with no such quote is not reported"
 
 interventions_fields:
-  entity: "the procedure performed, in standard clinical terms (\"endotracheal intubation\", \"intraosseous access\", \"transcutaneous pacing\")"
+  entity: "the procedure performed, in standard clinical terms written as plain words with spaces (\"endotracheal intubation\", \"intraosseous access\", \"transcutaneous pacing\"); never the category name and never with underscores: \"needle decompression\", not \"chest_decompression\""
   category: "its category from the list above"
   details: "its details as stated, such as the device, size, site or settings (\"size 8.0, 22 at the lips\", \"right tibia\", \"rate 70, 80 mA\"), and for a scan or test its findings (\"pericardial effusion, no tamponade\"); leave it out when none are stated"
   quotes: "a list of one or more quotes, as plain strings in order of occurrence; each is one continuous stretch of the new segment's transcript that gives information about the entity, whether or not it names it, copied word for word, never joined from separate parts and never from the previous extractions; an item with no such quote is not reported"
