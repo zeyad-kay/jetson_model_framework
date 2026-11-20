@@ -96,7 +96,7 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `VIDEO_IDLE_TIMEOUT` | `10` | seconds without a new frame before the video counts as finished |
 | `VIDEO_DRAIN_IDLE` | `1` | seconds the video file must stop growing after a session ends before segmentation finishes |
 | `VIDEO_PROBE_TIMEOUT` | `60` | seconds to wait for the video stream to become readable |
-| `VIDEO_MIN_SCORE` | `0.7` | minimum detection score, 0–1, of an object for its frame to be saved |
+| `VIDEO_MIN_SCORE` | `0.9` | minimum detection score, 0–1, of an object for its frame to be saved |
 | `VIDEO_JPEG_QUALITY` | `90` | JPEG quality of the saved frames, 1–95 |
 | `VIDEO_POLL_INTERVAL` | `0.05` | seconds between checks for new frames |
 
@@ -162,7 +162,7 @@ phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──�
 |---|---|---|---|
 | `server` | the client's commands and RTSP stream | `audio/audio.pcm` → `audio.mp3`, `video/video.ts` → `video.mp4` | none (CPU-only; runs MediaMTX) |
 | `asr_service` | `audio/audio.pcm` | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | `nvidia/nemotron-3.5-asr-streaming-0.6b` |
-| `llm_extraction_service` | `transcript/segments.json` | the ePCR as a log of per-segment records: `structured/<category>.json` (one file per category: `medications`, `interventions`, `vital_signs`, `mechanism_of_injury`, `demographics`, `medical_history`; `[{"segment", "extractions": [...]}, ...]`, a record for each segment that stated something new for the category; each validated against `llm_extraction_service/schema.py`, with each quote a `{"text", "time"}` object; medications are actions on administrations, a bolus given or an infusion started, each with an id, then updated by id: details stated later, a new rate, stopped), `medication_administrations.json` (each administration's current state, merged from those actions) and `progress.json` (the last segment taken in), then `extractions.done` when the session's last segment is in | `Qwen/Qwen3-4B-Instruct-2507` |
+| `llm_extraction_service` | `transcript/segments.json` | the ePCR as a log of per-segment records: `structured/<category>.json` (one file per category: `medications`, `interventions`, `vital_signs`, `mechanism_of_injury`, `demographics`, `medical_history`, `patient_condition` (complaints, mental status, abnormal findings and suspected injuries, each with its clinical name and body site when stated); `[{"segment", "extractions": [...]}, ...]`, a record for each segment that stated something new for the category; each validated against `llm_extraction_service/schema.py`, with each quote a `{"text", "time"}` object; medications are actions on administrations, a bolus given or an infusion started, each with an id, then updated by id: details stated later, a new rate, stopped), `medication_administrations.json` (each administration's current state, merged from those actions) and `progress.json` (the last segment taken in), then `extractions.done` when the session's last segment is in | `Qwen/Qwen3-4B-Instruct-2507` |
 | `video_service` | `video/video.ts` | `video/wounds/*.jpg` and `*.box` | `facebook/sam3` |
 | `dashboard` | `structured/<category>.json`, `medication_administrations.json` and `progress.json` (read-only) | a web page on port 8080 | none (CPU-only) |
 
@@ -203,14 +203,25 @@ It only reads the sessions folder, and the page loads nothing from the internet.
   once the server has exported its `audio.mp3` or `video.mp4`, or the extraction service has
   written `extractions.done`; otherwise it is live while its files keep changing
   (`DASHBOARD_LIVE_WINDOW`).
-- **Injuries:** the medical history that mentions an injury (a keyword match on words like
-  *injury*, *trauma*, *laceration*, *swelling*, *pain*), numbered. A front and back body map
-  marks each injury where its note names a body part (*left chest*, *shoulders*, *femur*…),
-  with a numbered badge per spot; a chip per injury names its locations, and the list below
-  gives every injury note. The pipeline has no structured injury locations, so a note that
-  names no body part has no spot, and a side that isn't named marks both. Clicking a badge,
-  chip or list item finds the note on the timeline.
-- **Patient timeline:** four lanes on one time axis. *Medical history* is the medical history,
+- **Injuries:** the complaints, findings and suspected injuries of `patient_condition`,
+  numbered. A front and back body map marks each where its name or body site names a body
+  part (*left side of the neck*, *jaw*, *chest*…), with a numbered badge per spot; a chip per
+  injury names its locations, and the list below gives every one. An item that names no body
+  part has no spot, and a side that isn't named marks both. Clicking a badge, chip or list
+  item finds it on the timeline. The bottom half of the panel shows the wound images a model
+  predicts into the session's `video/wounds/*.jpg` (or `*.png`), one at a time, in video order (by the
+  timestamp in the name, `000012.340.jpg`), with how far into the video each was taken. The
+  **Boxes** switch draws each image's bounding boxes (its `.box` file) over it. The latest
+  shows by default and new ones replace it as they arrive; the left and right arrows (or the
+  arrow keys) step through the rest, and clicking an image opens it full size.
+- **Medical history** (right column, top): the medical history grouped by kind (patient
+  history, comorbidity, family history), each item's quotes with when it was first mentioned;
+  hover or focus one for every time it was mentioned. It isn't on the timeline.
+- **Latest vital signs** (right column, bottom): the latest reading of each vital sign (BP,
+  MAP, HR, SpO₂, RR, EtCO₂, temperature, GCS, glucose, …) as a tile with when it was read;
+  hover or focus one for its quotes.
+- **Patient timeline:** four lanes on one time axis. *Patient condition* is the patient's
+  condition (complaints, mental status, findings, suspected injuries),
   *Vital signs* the vital-sign readings, grouped into one event per set of readings taken
   together (a reading within 20 s of the last, until a vital repeats), *Medications* the medication administrations (a bolus is an event, an infusion a bar from
   start to stop, with a dot at each rate change), *Interventions* the interventions. Times are elapsed from the
