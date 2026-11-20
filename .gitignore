@@ -9,3 +9,4 @@ logs
 artifacts
 old_epcr
 hf_cache
+tests/integration/extraction/replays/
