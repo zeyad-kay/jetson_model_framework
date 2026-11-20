@@ -726,6 +726,9 @@ class Intervention:
     def __post_init__(self):
         if not self.entity.strip():
             raise ValidationError("'entity' is missing")
+        # The model often writes the name as an identifier, usually its category's
+        # ("mechanical_ventilation"); store it as words.
+        self.entity = re.sub(r"\s+", " ", self.entity.replace("_", " ")).strip()
         self.category = _category_name(self.category)
         if self.category not in self.CATEGORIES:
             raise ValidationError(f"category {self.category!r} is not one of {', '.join(self.CATEGORIES)}")
