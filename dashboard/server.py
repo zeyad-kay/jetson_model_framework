@@ -8,10 +8,14 @@
                                   medication_administrations.json, see epcr.py), null until the
                                   extraction service has taken in its first segment, and wounds
                                   lists the wound images a model has predicted,
-                                  <session>/video/wounds/*.png, oldest first:
-                                  [{name, time, url}] (time: the file's modification time)
-    GET /api/sessions/<id>/wounds/<name>.png
-                                  one of those images
+                                  <session>/video/wounds/*.{jpg,jpeg,png}, earliest first:
+                                  [{name, time, seconds, url, boxes}] (time: the file's
+                                  modification time; seconds: the frame's position in the video,
+                                  from a name like 000012.340.jpg, else null; ordered by seconds,
+                                  then time; boxes: the url of its <stem>.box, else null)
+    GET /api/sessions/<id>/wounds/<name>
+                                  one of those images, or a .box file: its bounding boxes, one
+                                  "x0 y0 x1 y1" line of image pixels per box
 
 Times are Unix seconds. /api/sessions/<id> carries an ETag, so a page polling it gets
 304 Not Modified until the session changes. Nothing is ever written.
@@ -20,6 +24,7 @@ Times are Unix seconds. /api/sessions/<id> carries an ETag, so a page polling it
 import json
 import mimetypes
 import os
+import re
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +46,16 @@ ACTIVITY_FILES = ("audio/audio.pcm", "video/video.ts", "transcript/segments.json
 END_FILES = ("audio/audio.mp3", "video/video.mp4", "structured/extractions.done")
 # Where a model writes its predicted wound images, inside a session's folder.
 WOUNDS_DIR = Path("video") / "wounds"
+WOUND_SUFFIXES = (".jpg", ".jpeg", ".png")
+VIDEO_SECONDS_NAME = re.compile(r"\d+(\.\d+)?")  # the video service's names: 000012.340
+BOX_SUFFIX = ".box"  # an image's bounding boxes, written by the video service next to it
+mimetypes.add_type("text/plain", BOX_SUFFIX)
+
+
+def video_seconds(file: Path) -> float | None:
+    """The video position in a wound image's name (000012.340.jpg -> 12.34); None if it has none."""
+    # Strict: float() would also take "000000_2" (underscores), "inf" or "1e3".
+    return float(file.stem) if VIDEO_SECONDS_NAME.fullmatch(file.stem) else None
 
 
 def mtime(path: Path) -> float | None:
@@ -86,24 +101,37 @@ class Sessions:
         return sorted((self.summary(p) for p in folders), key=lambda s: s["started"] or 0, reverse=True)
 
     def wounds(self, path: Path) -> "list[dict]":  # quoted: list is a method of this class
-        """The session's wound images, oldest first, each {name, time, url}; the url changes
-        when the file does, so the page never shows a stale cached copy."""
+        """The session's wound images, earliest in the video first, each {name, time, seconds, url, boxes}.
+
+        seconds is the video position the video service puts in the name (000012.340.jpg), or None
+        for another name; those follow, oldest first. The url changes when the file does, so the
+        page never shows a stale cached copy."""
         try:
             files = [f for f in (path / WOUNDS_DIR).iterdir()
-                     if f.suffix.lower() == ".png" and not f.name.startswith(".") and f.is_file()]
+                     if f.suffix.lower() in WOUND_SUFFIXES and not f.name.startswith(".") and f.is_file()]
         except OSError:
             return []
         out = []
         for f in files:
             t = mtime(f)
             if t is not None:
-                out.append({"name": f.name, "time": t,
-                            "url": f"/api/sessions/{quote(path.name)}/wounds/{quote(f.name)}?v={int(t * 1000)}"})
-        return sorted(out, key=lambda w: (w["time"], w["name"]))
+                out.append({"name": f.name, "time": t, "seconds": video_seconds(f),
+                            "url": self.wound_url(path, f, t), "boxes": self.wound_url(path, f.with_suffix(BOX_SUFFIX))})
+        return sorted(out, key=lambda w: (w["seconds"] is None, w["seconds"] or 0, w["time"], w["name"]))
+
+    @staticmethod
+    def wound_url(path: Path, file: Path, t: float | None = None) -> str | None:
+        """The url of one of the session's wound files, or None if it doesn't exist. The url
+        carries the file's modification time t, so it changes when the file does."""
+        if t is None:
+            t = mtime(file)
+            if t is None:
+                return None
+        return f"/api/sessions/{quote(path.name)}/wounds/{quote(file.name)}?v={int(t * 1000)}"
 
     def wound_file(self, path: Path, name: str) -> Path | None:
-        """A wound image of the session, or None if name isn't one (or tries to leave the folder)."""
-        if Path(name).name != name or name.startswith(".") or not name.lower().endswith(".png"):
+        """A wound image or .box file of the session, or None if name isn't one (or tries to leave the folder)."""
+        if Path(name).name != name or name.startswith(".") or not name.lower().endswith(WOUND_SUFFIXES + (BOX_SUFFIX,)):
             return None
         file = path / WOUNDS_DIR / name
         return file if file.is_file() else None
@@ -140,7 +168,7 @@ def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:
                 if len(parts) == 3 and parts[1] == "wounds":
                     file = sessions.wound_file(folder, parts[2])
                     if file is None:
-                        return self.send_error(HTTPStatus.NOT_FOUND, "no such wound image")
+                        return self.send_error(HTTPStatus.NOT_FOUND, "no such wound file")
                     return self.send_file(file)
                 if len(parts) != 1:
                     return self.send_error(HTTPStatus.NOT_FOUND)

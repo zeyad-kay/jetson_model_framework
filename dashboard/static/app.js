@@ -28,6 +28,7 @@ const state = {
   etag: null,
   woundName: null,     // the wound image shown
   woundPinned: false,  // the viewer stepped back from the newest image: don't jump to new ones
+  woundBoxes: loadPref("woundBoxes", true), // draw the bounding boxes on the wound images
   detail: null,        // the last /api/sessions/<id> reply
   windowSec: 1200,     // visible span; 0 = everything
   follow: true,        // keep the latest events in view
@@ -42,6 +43,17 @@ const el = (tag, cls, text) => {
   if (text !== undefined && text !== null) node.textContent = text;
   return node;
 };
+
+// Per-browser preferences; storage can be missing or blocked (private windows), so never rely on it.
+function loadPref(key, fallback) {
+  try {
+    const v = localStorage.getItem(`dashboard.${key}`);
+    return v === null ? fallback : JSON.parse(v);
+  } catch { return fallback; }
+}
+function savePref(key, value) {
+  try { localStorage.setItem(`dashboard.${key}`, JSON.stringify(value)); } catch { /* not saved */ }
+}
 
 // ── formatting ──────────────────────────────────────────────────────────────
 
@@ -485,8 +497,8 @@ function renderHistory(model) {
 
 // ── wound images ────────────────────────────────────────────────────────────
 
-// The images a model predicts into <session>/video/wounds/, oldest first. The viewer shows the
-// newest and follows new ones as they arrive, until the arrows step back to an older one.
+// The images a model predicts into <session>/video/wounds/, earliest in the video first. The viewer
+// shows the latest and follows new ones as they arrive, until the arrows step back to an earlier one.
 function renderWounds() {
   const list = asList(state.detail && state.detail.wounds);
   let i = list.findIndex((w) => w.name === state.woundName);
@@ -507,8 +519,51 @@ function renderWounds() {
   $("wound-prev").disabled = i <= 0;
   $("wound-next").disabled = i >= list.length - 1;
   $("wound-count").textContent = list.length ? `${i + 1} / ${list.length}` : "";
-  $("wound-caption").textContent = w ? `${w.name} · ${new Date(w.time * 1000).toLocaleTimeString()}` : "";
+  $("wound-caption").textContent = !w ? ""
+    : typeof w.seconds === "number" ? `${fmtTime(w.seconds)} into the video`
+    : new Date(w.time * 1000).toLocaleTimeString();
   $("wounds-empty").hidden = !!w;
+  $("wound-boxes-toggle").checked = state.woundBoxes;
+  drawWoundBoxes();
+}
+
+// Each .box file's boxes, by url ([[x0, y0, x1, y1], …] in image pixels), or its pending fetch.
+// The url changes when the file does, so an entry never goes stale.
+const woundBoxCache = new Map();
+
+function parseBoxes(text) {
+  return text.split("\n").map((line) => line.trim().split(/\s+/).map(Number))
+    .filter((b) => b.length === 4 && b.every(isFinite));
+}
+
+// Draws the shown image's bounding boxes over it when the Boxes switch is on. The overlay's
+// viewBox is the image's own pixels, so the boxes scale and letterbox exactly as the image does.
+function drawWoundBoxes() {
+  const svg = $("wound-boxes"), img = $("wound-img");
+  const list = asList(state.detail && state.detail.wounds);
+  const w = list.find((x) => x.name === state.woundName);
+  svg.replaceChildren();
+  if (!state.woundBoxes || !w || !w.boxes || !img.naturalWidth || img.dataset.url !== w.url || !img.complete) return;
+  const cached = woundBoxCache.get(w.boxes);
+  if (cached === undefined) {
+    const pending = fetch(w.boxes, { cache: "no-store" })
+      .then((res) => (res.ok ? res.text() : ""))
+      .then((text) => { woundBoxCache.set(w.boxes, parseBoxes(text)); })
+      .catch(() => { woundBoxCache.delete(w.boxes); })
+      .finally(drawWoundBoxes);
+    woundBoxCache.set(w.boxes, pending);
+    return;
+  }
+  if (!Array.isArray(cached)) return; // still loading
+  svg.setAttribute("viewBox", `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+  for (const [x0, y0, x1, y1] of cached) {
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", x0);
+    rect.setAttribute("y", y0);
+    rect.setAttribute("width", Math.max(1, x1 - x0));
+    rect.setAttribute("height", Math.max(1, y1 - y0));
+    svg.append(rect);
+  }
 }
 
 function stepWound(delta) {
@@ -941,6 +996,12 @@ function init() {
   });
   $("wound-prev").addEventListener("click", () => stepWound(-1));
   $("wound-next").addEventListener("click", () => stepWound(1));
+  $("wound-img").addEventListener("load", drawWoundBoxes);
+  $("wound-boxes-toggle").addEventListener("change", (e) => {
+    state.woundBoxes = e.target.checked;
+    savePref("woundBoxes", state.woundBoxes);
+    drawWoundBoxes();
+  });
   $("wound-stage").addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();

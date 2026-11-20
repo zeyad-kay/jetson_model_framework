@@ -4,7 +4,7 @@ Creates a session, queues it on the video service over its bridge, then
 writes video/inputs/video.mp4's video in real time into <session>/video/video.ts as
 H.264 in MPEG-TS, as the server records it. When the file has been played
 out it ends the session, waits for the service to finish, and checks the
-overlay it wrote: <session>/video/overlay.mp4.
+frames it saved: <session>/video/wounds/*.jpg.
 
     docker compose run --rm video_test
     docker compose run --rm video_test --video-file /tests/integration/video/inputs/clip.mp4
@@ -14,8 +14,6 @@ Exits non-zero if any check fails. See harness.py for how it runs.
 """
 
 import argparse
-import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -45,39 +43,24 @@ def ffmpeg_cmd(ffmpeg: str, video: Path) -> list[str]:
     ]
 
 
-def probe(path: Path) -> dict:
-    """ffprobe's view of the first video stream: duration and frame count; {} if unreadable."""
-    try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
-             "-show_entries", "stream=nb_read_packets,width,height:format=duration",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=120,
-        )
-        info = json.loads(out.stdout or "{}")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return {}
-    stream = (info.get("streams") or [{}])[0]
-    return {
-        "duration": float((info.get("format") or {}).get("duration") or 0),
-        "frames": int(stream.get("nb_read_packets") or 0),
-        "size": f"{stream.get('width')}x{stream.get('height')}",
-    }
-
-
 def verify(session_dir: Path, session_id: str, checks: harness.Checks) -> None:
-    source = probe(session_dir / "video" / "video.ts")
-    overlay_path = session_dir / "video" / "overlay.mp4"
-    if not checks.check(overlay_path.is_file() and overlay_path.stat().st_size > 0, "overlay.mp4 was written"):
+    frames = sorted((session_dir / "video" / "wounds").glob("*.jpg"))
+    if not checks.check(len(frames) > 0, f"saved {len(frames)} frames with a detection to video/wounds/"):
         return
-    overlay = probe(overlay_path)
-    checks.check(overlay.get("frames", 0) > 0,
-                 f"overlay.mp4 is playable ({overlay.get('frames', 0)} frames, "
-                 f"{overlay.get('duration', 0):.1f}s, {overlay.get('size')})")
-    if source.get("frames"):
-        # The service may stop a little short of the recording; most of it should be there.
-        ratio = overlay.get("frames", 0) / source["frames"]
-        checks.check(ratio >= 0.9, f"overlay covers {ratio:.0%} of video.ts's {source['frames']} frames")
+    # A JPEG starts with the SOI marker and, written completely, ends with EOI.
+    broken = [f.name for f in frames if not (f.read_bytes()[:2] == b"\xff\xd8" and f.read_bytes()[-2:] == b"\xff\xd9")]
+    checks.check(not broken, f"every frame is a complete JPEG ({len(broken)} broken: {broken[:5]})")
+
+    # Each frame's <frame>.box: one "x0 y0 x1 y1" line of pixels per detected object.
+    bad = []
+    for frame in frames:
+        box_path = frame.with_suffix(".box")
+        lines = box_path.read_text().splitlines() if box_path.is_file() else []
+        boxes = [line.split() for line in lines]
+        if not boxes or any(len(b) != 4 or not all(v.isdigit() for v in b) or int(b[0]) > int(b[2])
+                            or int(b[1]) > int(b[3]) for b in boxes):
+            bad.append(box_path.name)
+    checks.check(not bad, f"every frame has a .box file of x0 y0 x1 y1 lines ({len(bad)} bad: {bad[:5]})")
 
 
 def main() -> None:

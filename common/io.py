@@ -61,12 +61,28 @@ class TimedTranscriptWriter:
         self.close()
 
 
-def write_json(path: Union[str, Path], obj) -> None:
-    """Writes obj as JSON, replacing the file atomically so readers never see a partial write."""
+def write_text(path: Union[str, Path], text: str) -> None:
+    """Writes text, replacing the file atomically so readers never see a partial write."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_json(path: Union[str, Path], obj) -> None:
+    """Writes obj as JSON, replacing the file atomically so readers never see a partial write."""
+    write_text(path, json.dumps(obj, indent=1, ensure_ascii=False))
+
+
+def write_jpeg(path: Union[str, Path], image, quality: int = 90) -> None:
+    """Writes an HxWx3 uint8 RGB array as a JPEG, replacing the file atomically so readers never see a partial write."""
+    from PIL import Image  # only the services that write images need Pillow
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    Image.fromarray(image).save(tmp, format="JPEG", quality=quality)
     os.replace(tmp, path)
 
 

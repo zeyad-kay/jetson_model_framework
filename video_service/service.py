@@ -1,6 +1,6 @@
-import subprocess
 from pathlib import Path
 
+from common.io import write_jpeg, write_text
 from common.service import WorkerService
 from video_service.config import Config
 from common.log import get_logger
@@ -13,9 +13,12 @@ class VideoService(WorkerService):
     """Segments each session's video as it is recorded.
 
     Idles until queue_session() names a session, then reads <session>/video/video.ts,
-    segments it with SAM 3 and writes the masks drawn over the frames to
-    <session>/video/overlay.mp4 until the session ends (end_session(), or queue_session() of
-    the next session). shutdown() ends the current session and makes run() return.
+    segments it with SAM 3 and saves each frame in which an object is detected with a score of at
+    least min_score to <session>/video/wounds/<seconds>.jpg (the folder is made with the first one),
+    with those objects' bounding boxes in <seconds>.box, one "x0 y0 x1 y1" line of pixels per box.
+    <seconds> is the frame's position in the video, zero-padded with milliseconds (000012.340), so
+    the names sort in video order. It runs until the session ends (end_session(), or
+    queue_session() of the next session). shutdown() ends the current session and makes run() return.
     """
 
     def __init__(self, config: Config):
@@ -29,42 +32,32 @@ class VideoService(WorkerService):
             idle_timeout=cfg.idle_timeout,
             probe_timeout=cfg.probe_timeout,
             drain_idle=cfg.drain_idle,
-            alpha=cfg.alpha,
         )
         log.info("model ready: %s (prompt %r)", type(model).__name__, model.prompt)
         return model
 
     def _process_session(self, session_dir: Path) -> None:
         video_path = session_dir / "video" / "video.ts"
-        output_path = session_dir / "video" / "overlay.mp4"
-        log.info("segmenting %s, writing %s", video_path, output_path)
-        encoder = None
+        output_dir = session_dir / "video" / "wounds"
+        min_score = self.config.min_score
+        log.info("segmenting %s, writing frames with a detection scoring >= %.2f to %s", video_path, min_score, output_dir)
         num_frames = 0
+        num_saved = 0
         try:
             if not self._wait_for_file(video_path):
                 return
-            for frame, object_ids, masks, seconds in self._model.segment(str(video_path)):
-                if encoder is None:
-                    encoder = self._open_encoder(output_path, frame.shape[1], frame.shape[0], self._model.fps)
-                overlaid = self._model.overlay_masks(frame, object_ids, masks)
-                encoder.stdin.write(overlaid.tobytes())
+            for frame, _object_ids, scores, boxes, seconds in self._model.segment(str(video_path)):
+                kept = [box for score, box in zip(scores, boxes) if float(score) >= min_score]
+                if kept:
+                    # Boxes first, so whoever sees the image can already read its boxes.
+                    name = f"{seconds:010.3f}"
+                    lines = "".join(" ".join(str(round(float(v))) for v in box) + "\n" for box in kept)
+                    write_text(output_dir / f"{name}.box", lines)
+                    write_jpeg(output_dir / f"{name}.jpg", frame, self.config.jpeg_quality)
+                    num_saved += 1
                 num_frames += 1
                 if num_frames % 100 == 0:
-                    log.debug("segmented %d frames (%.2fs)", num_frames, seconds)
+                    log.debug("segmented %d frames (%.2fs), saved %d", num_frames, seconds, num_saved)
         finally:
-            # Close even on a crash so the partial video stays playable.
-            if encoder is not None:
-                encoder.stdin.close()
-                encoder.wait()
-            log.info("wrote %d frames to %s", num_frames, output_path)
+            log.info("segmented %d frames, saved %d to %s", num_frames, num_saved, output_dir)
 
-    @staticmethod
-    def _open_encoder(output_path: Path, width: int, height: int, fps: float) -> subprocess.Popen:
-        """Starts ffmpeg reading raw RGB frames on stdin and encoding them to output_path."""
-        return subprocess.Popen(
-            ["ffmpeg", "-y", "-loglevel", "error",
-             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
-             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",  # yuv420p needs even dimensions
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(output_path)],
-            stdin=subprocess.PIPE,
-        )

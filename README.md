@@ -96,7 +96,8 @@ uses its default from the service's `config.py`. Restart the affected services a
 | `VIDEO_IDLE_TIMEOUT` | `10` | seconds without a new frame before the video counts as finished |
 | `VIDEO_DRAIN_IDLE` | `1` | seconds the video file must stop growing after a session ends before segmentation finishes |
 | `VIDEO_PROBE_TIMEOUT` | `60` | seconds to wait for the video stream to become readable |
-| `VIDEO_ALPHA` | `0.5` | opacity of the mask overlay, 0–1 |
+| `VIDEO_MIN_SCORE` | `0.7` | minimum detection score, 0–1, of an object for its frame to be saved |
+| `VIDEO_JPEG_QUALITY` | `90` | JPEG quality of the saved frames, 1–95 |
 | `VIDEO_POLL_INTERVAL` | `0.05` | seconds between checks for new frames |
 
 **Dashboard** (`DASHBOARD_`)
@@ -162,7 +163,7 @@ phone ──TCP :8000 (JSON)──▶ server ──unix sockets (bridge)──�
 | `server` | the client's commands and RTSP stream | `audio/audio.pcm` → `audio.mp3`, `video/video.ts` → `video.mp4` | none (CPU-only; runs MediaMTX) |
 | `asr_service` | `audio/audio.pcm` | `transcript/transcript.txt`, `transcript.jsonl`, `segments.json` | `nvidia/nemotron-3.5-asr-streaming-0.6b` |
 | `llm_extraction_service` | `transcript/segments.json` | the ePCR as a log of per-segment records: `structured/<category>.json` (one file per category: `medications`, `interventions`, `vital_signs`, `mechanism_of_injury`, `demographics`, `medical_history`; `[{"segment", "extractions": [...]}, ...]`, a record for each segment that stated something new for the category; each validated against `llm_extraction_service/schema.py`, with each quote a `{"text", "time"}` object; medications are actions on administrations, a bolus given or an infusion started, each with an id, then updated by id: details stated later, a new rate, stopped), `medication_administrations.json` (each administration's current state, merged from those actions) and `progress.json` (the last segment taken in), then `extractions.done` when the session's last segment is in | `Qwen/Qwen3-4B-Instruct-2507` |
-| `video_service` | `video/video.ts` | `video/overlay.mp4` | `facebook/sam3` |
+| `video_service` | `video/video.ts` | `video/wounds/*.jpg` and `*.box` | `facebook/sam3` |
 | `dashboard` | `structured/<category>.json`, `medication_administrations.json` and `progress.json` (read-only) | a web page on port 8080 | none (CPU-only) |
 
 The server drives the services over unix sockets in `BRIDGE_DIR` with three commands:
@@ -223,7 +224,9 @@ It only reads the sessions folder, and the page loads nothing from the internet.
 
 The server is `dashboard/server.py` (standard library only); the page is `dashboard/static/`.
 Its JSON is also available directly: `GET /api/sessions` lists the sessions, and
-`GET /api/sessions/<id>` returns one session with its ePCR (`epcr`).
+`GET /api/sessions/<id>` returns one session with its ePCR (`epcr`) and its wound images
+(`wounds`: `[{name, time, seconds, url, boxes}]`), each served at `GET /api/sessions/<id>/wounds/<name>`
+(`.jpg`, `.jpeg` or `.png`, and the `.box` file of its bounding boxes at `boxes`).
 
 ## Testing the live stack
 
@@ -315,7 +318,7 @@ finish and checks its output. Shared code is in `tests/integration/harness.py`.
 | Command | Service | Feeds it | Checks |
 |---|---|---|---|
 | `docker compose run --rm asr_test` | `asr_service` | `asr/inputs/audio.mp3`, in real time | transcript word error rate against the ground truth (at most `--max-wer`, 0.15 by default) and segment boundaries |
-| `docker compose run --rm video_test` | `video_service` | `video/inputs/video.mp4`, in real time | `video/overlay.mp4` was written |
+| `docker compose run --rm video_test` | `video_service` | `video/inputs/video.mp4`, in real time | `video/wounds/*.jpg` frames were written, each with a `.box` file of bounding boxes |
 | `docker compose run --rm llm_extraction_test` | `llm_extraction_service` | `extraction/inputs/segments.json`, one segment every 5 s (`--interval`) | a `<category>.json` of records per category (each for an input segment, in order, not empty), every quote time inside its record's segment, a unique id for each medication administration and an earlier one for each update, `medication_administrations.json` with each once, `progress.json` naming the last segment, `extractions.done`; then a report of the extractions' score against `extraction/ground_truth/` |
 
 ### Run a test

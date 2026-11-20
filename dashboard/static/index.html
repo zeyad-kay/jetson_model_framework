@@ -66,9 +66,15 @@
           <div class="wounds-head">
             <h3 id="wounds-heading">Wound images</h3>
             <span class="wound-count" id="wound-count"></span>
+            <label class="switch" title="Draw the detected bounding boxes on the images">
+              <input type="checkbox" role="switch" id="wound-boxes-toggle">
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>Boxes</span>
+            </label>
           </div>
           <div class="wound-stage" id="wound-stage" tabindex="0" aria-label="Wound images; use the left and right arrow keys to browse">
             <a class="wound-link" id="wound-link" target="_blank" rel="noopener" hidden><img id="wound-img" alt=""></a>
+            <svg class="wound-boxes" id="wound-boxes" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
             <button type="button" class="wound-nav prev" id="wound-prev" aria-label="Previous wound image" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
             </button>
@@ -115,7 +121,7 @@
       </section>
 
       <section class="latest-vitals" aria-labelledby="latest-vitals-heading">
-        <h2 id="latest-vitals-heading">Latest vital signs</h2>
+        <h2 id="latest-vitals-heading">Vital signs</h2>
         <div class="panel">
           <div class="vital-tiles" id="vital-tiles"></div>
           <p class="empty" id="vitals-empty">No vital signs yet.</p>

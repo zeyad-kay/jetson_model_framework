@@ -32,12 +32,13 @@ class VideoModel(metaclass=SingletonMeta):
         """Seconds without a new frame before the input is considered finished."""
         return self._idle_timeout
 
-    def segment(self, video_path: str) -> Generator[tuple[Any, list[int], Any, float], None, None]:
-        """Segment the video at video_path and yield (frame, object_ids, masks, seconds).
+    def segment(self, video_path: str) -> Generator[tuple[Any, list[int], Any, Any, float], None, None]:
+        """Segment the video at video_path and yield (frame, object_ids, scores, boxes, seconds).
 
         frame is an HxWx3 uint8 RGB numpy array, object_ids the ids of the
-        tracked objects and masks one HxW boolean mask per id. seconds is the
-        position of the frame in the video, from its start.
+        tracked objects, scores one detection score (0-1) per id and boxes one
+        (x0, y0, x1, y1) pixel box per id. seconds is the position of the frame
+        in the video, from its start.
 
         The base implementation only validates that the path exists.
         Subclasses should call super().segment(video_path) before
@@ -45,11 +46,7 @@ class VideoModel(metaclass=SingletonMeta):
         """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
-        yield None, [], None, 0.0
-
-
-# Saturated colors that stand out on skin and typical backgrounds
-_PALETTE = [(255, 0, 0), (0, 200, 255), (255, 220, 0), (0, 255, 80), (255, 0, 255), (255, 128, 0)]
+        yield None, [], None, None, 0.0
 
 
 class Sam3(VideoModel):
@@ -69,7 +66,6 @@ class Sam3(VideoModel):
         idle_timeout: float = 10.0,
         probe_timeout: float = 60.0,
         drain_idle: float = 1.0,
-        alpha: float = 0.5,
     ):
         super().__init__(prompt, "rgb24", idle_timeout)
         # Heavy imports are deferred so importing this module stays cheap.
@@ -83,8 +79,6 @@ class Sam3(VideoModel):
         self._dtype = getattr(torch, dtype)
         self._probe_timeout = probe_timeout
         self._drain_idle = drain_idle
-        self._alpha = alpha
-        self._colors = {}
         self._fps = None
         self._finish_event = threading.Event()
         self._processor = Sam3VideoProcessor.from_pretrained(model_id)
@@ -129,9 +123,15 @@ class Sam3(VideoModel):
         frame_bytes = width * height * 3
         # tail -f keeps feeding bytes as the writer appends; ffmpeg decodes from stdin
         tail = subprocess.Popen(["tail", "-c", "+1", "-f", path], stdout=subprocess.PIPE)
+        # The input never ends, so ffmpeg's defaults would hold back frames: it buffers ~5 MB / 5 s
+        # to analyse the stream before decoding (a short recording yields nothing), and frame-
+        # threaded decoding keeps the newest ~15 frames. A tiny probe and one decoder thread emit
+        # each frame as it arrives; passthrough keeps ffmpeg from duplicating frames to fill the
+        # frame rate it then can't measure.
         decoder = subprocess.Popen(
-            ["ffmpeg", "-loglevel", "error", "-f", "mpegts", "-i", "-",
-             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            ["ffmpeg", "-loglevel", "error", "-probesize", "32768", "-analyzeduration", "0", "-threads", "1",
+             "-f", "mpegts", "-i", "-",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-fps_mode", "passthrough", "-"],
             stdin=tail.stdout, stdout=subprocess.PIPE,
         )
         tail.stdout.close()
@@ -166,26 +166,14 @@ class Sam3(VideoModel):
             decoder.kill()
             tail.kill()
 
-    def overlay_masks(self, frame, object_ids, masks):
-        """Blend one stable color per object mask onto an HxWx3 uint8 frame, on the GPU."""
-        torch = self._torch
-        out = torch.from_numpy(frame).to(self._device).float()
-        for obj_id, mask in zip(object_ids, masks):
-            obj_id = int(obj_id)
-            if obj_id not in self._colors:
-                self._colors[obj_id] = torch.tensor(
-                    _PALETTE[obj_id % len(_PALETTE)], dtype=torch.float32, device=self._device
-                )
-            m = mask.to(self._device).bool().unsqueeze(-1)
-            out = torch.where(m, (1 - self._alpha) * out + self._alpha * self._colors[obj_id], out)
-        return out.to(torch.uint8).cpu().numpy()  # one frame-sized copy instead of one mask per object
+    def segment(self, video_path: str) -> Generator[tuple[Any, list[int], Any, Any, float], None, None]:
+        """Yield (frame, object_ids, scores, boxes, seconds) as the (possibly still growing) MPEG-TS file is decoded.
 
-    def segment(self, video_path: str) -> Generator[tuple[Any, list[int], Any, float], None, None]:
-        """Yield (frame, object_ids, masks, seconds) as the (possibly still growing) MPEG-TS file is decoded.
-
-        frame is the original HxWx3 uint8 RGB frame; use overlay_masks() to
-        draw the masks on it. seconds is the frame's position in the video,
-        derived from the frame count and the stream's frame rate.
+        frame is the original HxWx3 uint8 RGB frame, scores SAM 3's detection
+        score per object and boxes its (x0, y0, x1, y1) box per object, in the
+        frame's pixels. seconds is the
+        frame's position in the video, derived from the frame count and the
+        stream's frame rate.
 
         Runs until finish() is called and the file is
         drained, no frame arrives for idle_timeout seconds, or the generator is closed.
@@ -194,7 +182,6 @@ class Sam3(VideoModel):
             pass
 
         self._finish_event.clear()
-        self._colors.clear()
         processor = self._processor
         model = self._model
 
@@ -222,4 +209,4 @@ class Sam3(VideoModel):
                 outputs,
                 original_sizes=inputs.original_sizes,  # required for streaming inference
             )
-            yield frame, processed["object_ids"], processed["masks"], frame_idx / fps
+            yield frame, processed["object_ids"], processed["scores"], processed["boxes"], frame_idx / fps

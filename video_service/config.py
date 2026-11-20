@@ -18,8 +18,10 @@ class Config:
     drain_idle: float = 1.0
     # Seconds to wait for the video stream to become probeable.
     probe_timeout: float = 60.0
-    # Opacity of the mask overlay, 0-1.
-    alpha: float = 0.5
+    # Minimum detection score (0-1) of an object for its frame to be saved.
+    min_score: float = 0.7
+    # JPEG quality of the saved frames, 1-95.
+    jpeg_quality: int = 90
     poll_interval: float = 0.05
     log_level: str = "INFO"
     log_file: Optional[str] = None
@@ -39,6 +41,7 @@ class Config:
             idle_timeout=get("VIDEO_IDLE_TIMEOUT", float, defaults.idle_timeout),
             drain_idle=get("VIDEO_DRAIN_IDLE", float, defaults.drain_idle),
             probe_timeout=get("VIDEO_PROBE_TIMEOUT", float, defaults.probe_timeout),
-            alpha=get("VIDEO_ALPHA", float, defaults.alpha),
+            min_score=get("VIDEO_MIN_SCORE", float, defaults.min_score),
+            jpeg_quality=get("VIDEO_JPEG_QUALITY", int, defaults.jpeg_quality),
             poll_interval=get("VIDEO_POLL_INTERVAL", float, defaults.poll_interval),
         )

@@ -18,6 +18,7 @@
   --live-bg: #0f2318;
   --live-border: #1f5a37;
   --injury: #d9534f;
+  --wound-box: var(--lane-medications); /* bounding boxes drawn on wound images, and their switch */
   --radius: 14px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -104,9 +105,9 @@ h2 {
   flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 8px;
   padding: 12px 14px 14px; border-top: 1px solid var(--border);
 }
-.wounds-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wounds-head { display: flex; align-items: center; gap: 10px; }
 .wounds-head h3 {
-  margin: 0; font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+  margin: 0 auto 0 0; font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
   color: var(--text-secondary);
 }
 .wound-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -116,7 +117,29 @@ h2 {
 }
 .wound-stage:focus-visible { box-shadow: 0 0 0 2px #4a5566; }
 .wound-link { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
-.wound-link img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+/* The image fills the stage, letterboxed, so the box overlay (same box, viewBox = the image's
+   pixels, "meet") lines up with it exactly. */
+.wound-link img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.wound-boxes { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.wound-boxes rect { fill: none; stroke: var(--wound-box); stroke-width: 2; vector-effect: non-scaling-stroke; }
+
+/* A sliding on/off switch around a checkbox. */
+.switch {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  font-size: 12px; color: var(--text-secondary);
+}
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.switch-track {
+  position: relative; width: 28px; height: 16px; flex: none; border-radius: 8px;
+  background: var(--border); transition: background 0.15s;
+}
+.switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--text-secondary); transition: transform 0.15s, background 0.15s;
+}
+.switch input:checked + .switch-track { background: var(--wound-box); }
+.switch input:checked + .switch-track::after { transform: translateX(12px); background: var(--text-primary); }
+.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 2px #4a5566; }
 .wound-nav {
   position: absolute; top: 50%; transform: translateY(-50%);
   display: grid; place-items: center; width: 36px; height: 36px; padding: 0; cursor: pointer;
