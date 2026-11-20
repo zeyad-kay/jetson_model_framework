@@ -333,11 +333,11 @@ function svgEl(tag, attrs, text) {
 }
 
 function highlightInjury(num, on) {
-  document.querySelectorAll(`[data-injury="${num}"]`).forEach((n) => n.classList.toggle("hl", on));
+  document.querySelectorAll(`[data-injury~="${num}"]`).forEach((n) => n.classList.toggle("hl", on));
 }
 
-function wireInjury(node, note, num) {
-  attachTooltip(node, note);
+function wireInjury(node, note, num, tip = note) {
+  attachTooltip(node, tip);
   node.addEventListener("click", () => revealEvent(note));
   node.addEventListener("mouseenter", () => highlightInjury(num, true));
   node.addEventListener("mouseleave", () => highlightInjury(num, false));
@@ -346,17 +346,35 @@ function wireInjury(node, note, num) {
   node.dataset.injury = num;
 }
 
+// The tooltip of a location: the injuries there by name, not their quotes.
+function locationTip(label, notes) {
+  const names = [...new Set(notes.map((n) => n.title || "–"))];
+  const times = notes.map((n) => n.t).filter(isNum);
+  return {
+    kind: names.length > 1 ? `${names.length} injuries` : "Injury", t: times.length ? Math.min(...times) : null,
+    title: label, entities: names,
+  };
+}
+
 function renderInjuries(model) {
   const list = $("injury-list"), chips = $("injury-chips"), marks = $("body-marks");
   list.replaceChildren();
   chips.replaceChildren();
   marks.replaceChildren();
   // Each spot's badge goes in a column beside its figure, on the spot's side, pushed down
-  // where badges would overlap; a leader line joins them.
-  const columns = new Map(); // "front:-1" → [{ p, num, label, note }]
+  // where badges would overlap; a leader line joins them. A spot is drawn once, for the first
+  // injury there; later injuries at the same spot only join its highlight.
+  const columns = new Map(); // "front:-1" → [{ p, num, nums, label, note }]
+  const spots = new Map();   // "front:x:y" → its mark
   model.injuries.forEach((note, i) => {
     for (const r of injuryRegions(note.where || note.title)) {
       for (const p of regionPoints(r)) {
+        const spot = `${r.region.view}:${p.x}:${p.y}`;
+        if (spots.has(spot)) {
+          const mark = spots.get(spot);
+          if (!mark.nums.includes(String(i + 1))) { mark.nums.push(String(i + 1)); mark.notes.push(note); }
+          continue;
+        }
         const centre = FIG_X[r.region.view] + 50;
         let dir = p.x > centre + 1 ? 1 : p.x < centre - 1 ? -1 : 0;
         if (!dir) { // midline: the emptier column
@@ -365,11 +383,29 @@ function renderInjuries(model) {
         }
         const key = `${r.region.view}:${dir}`;
         if (!columns.has(key)) columns.set(key, []);
-        columns.get(key).push({ p, num: String(i + 1), label: r.label, note,
-                                x: FIG_X[r.region.view] + (dir < 0 ? -BADGE_GAP : 100 + BADGE_GAP) });
+        const mark = { p, num: String(i + 1), nums: [String(i + 1)], notes: [note], label: r.label, note,
+                       x: FIG_X[r.region.view] + (dir < 0 ? -BADGE_GAP : 100 + BADGE_GAP) };
+        spots.set(spot, mark);
+        columns.get(key).push(mark);
       }
     }
   });
+  // The locations (a bilateral region's two spots share a label), numbered 1, 2, … in order of
+  // their first injury; the map's badges and the chips carry these numbers.
+  const locations = new Map(); // label → { id, nums, notes }
+  for (const m of [...spots.values()].sort((a, b) => a.num - b.num)) {
+    if (!locations.has(m.label)) locations.set(m.label, { id: String(locations.size + 1), nums: [], notes: [] });
+    const loc = locations.get(m.label);
+    m.nums.forEach((n, j) => { if (!loc.nums.includes(n)) { loc.nums.push(n); loc.notes.push(m.notes[j]); } });
+  }
+  const injuryLocations = new Map(); // injury number → its location numbers
+  for (const loc of locations.values()) {
+    for (const n of loc.nums) {
+      if (!injuryLocations.has(n)) injuryLocations.set(n, []);
+      injuryLocations.get(n).push(loc.id);
+    }
+  }
+
   const dots = svgEl("g"), badges = svgEl("g");
   marks.append(dots, badges);
   for (const col of columns.values()) {
@@ -378,13 +414,34 @@ function renderInjuries(model) {
     for (const m of col) {
       const by = Math.max(m.p.y, lastY + BADGE_STEP, 8);
       lastY = by;
-      dots.append(svgEl("line", { class: "leader", x1: m.p.x, y1: m.p.y, x2: m.x, y2: by, "data-injury": m.num }),
-                  svgEl("circle", { class: "spot", cx: m.p.x, cy: m.p.y, r: 2.4, "data-injury": m.num }));
-      const badge = svgEl("g", { class: "badge", tabindex: "0", role: "button", "aria-label": `Injury ${m.num}: ${m.label}` });
-      badge.append(svgEl("circle", { cx: m.x, cy: by, r: 7 }), svgEl("text", { x: m.x, y: by }, m.num));
-      wireInjury(badge, m.note, m.num);
+      const nums = m.nums.join(" ");
+      dots.append(svgEl("line", { class: "leader", x1: m.p.x, y1: m.p.y, x2: m.x, y2: by, "data-injury": nums }),
+                  svgEl("circle", { class: "spot", cx: m.p.x, cy: m.p.y, r: 2.4, "data-injury": nums }));
+      const id = locations.get(m.label).id;
+      const label = `Location ${id}: ${m.label}, ${m.nums.length} injur${m.nums.length > 1 ? "ies" : "y"}`;
+      const badge = svgEl("g", { class: "badge", tabindex: "0", role: "button", "aria-label": label });
+      badge.append(svgEl("circle", { cx: m.x, cy: by, r: 7 }), svgEl("text", { x: m.x, y: by }, id));
+      wireInjury(badge, m.note, m.num, locationTip(m.label, m.notes));
+      badge.dataset.injury = nums; // highlighted with any injury at this spot
+      for (const [on, events] of [[true, ["mouseenter", "focus"]], [false, ["mouseleave", "blur"]]]) {
+        for (const e of events) badge.addEventListener(e, () => m.nums.forEach((n) => highlightInjury(n, on)));
+      }
       badges.append(badge);
     }
+  }
+
+  for (const [label, loc] of locations) {
+    const chip = el("button", "chip");
+    chip.type = "button";
+    chip.append(el("span", "num", loc.id), el("span", null, label));
+    wireInjury(chip, loc.notes[0], loc.nums[0], locationTip(label, loc.notes));
+    chip.dataset.injury = loc.nums.join(" ");
+    for (const [on, events] of [[true, ["mouseenter", "focus"]], [false, ["mouseleave", "blur"]]]) {
+      for (const e of events) chip.addEventListener(e, () => loc.nums.forEach((n) => highlightInjury(n, on)));
+    }
+    const li = el("li");
+    li.append(chip);
+    chips.append(li);
   }
 
   model.injuries.forEach((note, i) => {
@@ -392,19 +449,10 @@ function renderInjuries(model) {
     const regions = injuryRegions(note.where || note.title);
     const where = regions.map((r, j) => (j && !/^[LR] /.test(r.label) ? r.label.toLowerCase() : r.label)).join(", ");
 
-    if (regions.length) {
-      const chip = el("button", "chip");
-      chip.type = "button";
-      chip.append(el("span", "num", num), el("span", null, where));
-      wireInjury(chip, note, num);
-      const li = el("li");
-      li.append(chip);
-      chips.append(li);
-    }
-
     const button = el("button", "injury");
     button.type = "button";
-    button.append(el("span", "num", num), el("span", "text", note.title),
+    // Numbered by the location(s) it is at, like the map; blank if none was found.
+    button.append(el("span", "num", (injuryLocations.get(num) || []).join(",")), el("span", "text", note.title),
                   el("span", "when", [fmtTime(note.t), where].filter(Boolean).join(" · ")));
     wireInjury(button, note, num);
     const li = el("li");
@@ -715,6 +763,11 @@ function showTooltip(node, item) {
       dl.append(el("dt", null, k), dd);
     }
     tip.append(dl);
+  }
+  if (item.entities) {
+    const ul = el("ul", "tt-entities");
+    for (const name of item.entities) ul.append(el("li", null, name));
+    tip.append(ul);
   }
   const quotes = (item.quotes || []).filter((q) => typeof q === "string" && q.trim());
   if (quotes.length) {

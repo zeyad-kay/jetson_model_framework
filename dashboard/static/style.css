@@ -181,7 +181,8 @@ h2 {
 }
 .injury-list li + li { border-top: 1px solid var(--grid); }
 .injury:hover, .injury:focus-visible, .injury.hl { background: #1a1f28; outline: none; }
-.injury .num { margin-top: 1px; }
+.injury .num { margin-top: 1px; width: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; box-sizing: border-box; }
+.injury .num:empty { visibility: hidden; }
 .injury .text { font-size: 16px; }
 .injury .when { grid-column: 2; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
@@ -311,6 +312,8 @@ button.dot:hover, button.dot:focus-visible, button.dot.active { outline: 2px sol
 .tooltip dd { margin: 0; }
 .tooltip .tt-quotes { margin: 6px 0 0; padding: 0; list-style: none; color: var(--text-secondary); }
 .tooltip .tt-quotes li { margin-top: 4px; padding-left: 10px; border-left: 2px solid #3a4656; font-style: italic; }
+.tooltip .tt-entities { margin: 6px 0 0; padding-left: 16px; color: var(--text-primary); }
+.tooltip .tt-entities li { margin-top: 2px; }
 
 /* ── narrow screens ─────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
