@@ -83,6 +83,10 @@ class Sam3(VideoModel):
         self._finish_event = threading.Event()
         self._processor = Sam3VideoProcessor.from_pretrained(model_id)
         self._model = Sam3VideoModel.from_pretrained(model_id, device_map=device, dtype=self._dtype).eval()
+        # How many past frames the tracker reads: mask memories (num_maskmem - 1 back) and
+        # object pointers (max_object_pointers_in_encoder - 1 back). Older per-frame state is dropped.
+        tracker_cfg = self._model.config.tracker_config
+        self._history = max(tracker_cfg.num_maskmem, tracker_cfg.max_object_pointers_in_encoder)
 
     @property
     def fps(self) -> float | None:
@@ -146,7 +150,8 @@ class Sam3(VideoModel):
                 frames.put(buf)
             frames.put(None)
 
-        threading.Thread(target=reader, daemon=True).start()
+        reader_thread = threading.Thread(target=reader, daemon=True)
+        reader_thread.start()
         last_frame = time.monotonic()
         try:
             while True:
@@ -165,6 +170,17 @@ class Sam3(VideoModel):
         finally:
             decoder.kill()
             tail.kill()
+            # Empty the queue so a reader blocked on put() can finish: once the decoder is dead
+            # it makes at most two more puts (a pending frame, then None), which now fit.
+            while True:
+                try:
+                    frames.get_nowait()
+                except queue.Empty:
+                    break
+            reader_thread.join(timeout=5)
+            decoder.wait()
+            tail.wait()
+            decoder.stdout.close()
 
     def segment(self, video_path: str) -> Generator[tuple[Any, list[int], Any, Any, float], None, None]:
         """Yield (frame, object_ids, scores, boxes, seconds) as the (possibly still growing) MPEG-TS file is decoded.
@@ -209,4 +225,26 @@ class Sam3(VideoModel):
                 outputs,
                 original_sizes=inputs.original_sizes,  # required for streaming inference
             )
+            self._pop_cached_frames(session, frame_idx - self._history)
             yield frame, processed["object_ids"], processed["scores"], processed["boxes"], frame_idx / fps
+
+    @staticmethod
+    def _pop_cached_frames(session, old_idx: int) -> None:
+        """Drop the per-frame state of frame old_idx, which the tracker no longer reads.
+
+        In streaming mode the session otherwise keeps every frame's pixels and outputs,
+        so memory grows with the length of the video. Called once per frame, so each
+        old frame is dropped exactly once. Conditioning frames are kept: the tracker
+        picks among them by distance, not by a fixed window.
+        """
+        if old_idx < 0:
+            return
+        if session.processed_frames is not None:
+            session.processed_frames.pop(old_idx, None)
+        for out in session.output_dict_per_obj.values():
+            out["non_cond_frame_outputs"].pop(old_idx, None)
+        for frames in session.frames_tracked_per_obj.values():
+            frames.pop(old_idx, None)
+        # Despite their names these are keyed by frame index; the score dict is deep-copied every frame.
+        session.obj_id_to_tracker_score_frame_wise.pop(old_idx, None)
+        session.suppressed_obj_ids.pop(old_idx, None)

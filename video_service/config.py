@@ -19,7 +19,7 @@ class Config:
     # Seconds to wait for the video stream to become probeable.
     probe_timeout: float = 60.0
     # Minimum detection score (0-1) of an object for its frame to be saved.
-    min_score: float = 0.7
+    min_score: float = 0.9
     # JPEG quality of the saved frames, 1-95.
     jpeg_quality: int = 90
     poll_interval: float = 0.05
