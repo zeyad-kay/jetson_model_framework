@@ -10,7 +10,6 @@
   --text-secondary: #b4bcc8;
   --text-muted: #7d8794;
   /* Lane identity (validated with the dataviz palette checker, dark mode, on --surface-1). */
-  --lane-vitals: #d95926;        /* categorical slot 2, dark step */
   --lane-medications: #3987e5;   /* categorical slot 1, dark step */
   --lane-interventions: #199e70; /* categorical slot 3, dark step */
   --lane-condition: #c98500;     /* categorical slot 4, dark step */
@@ -69,10 +68,6 @@ button, select { font: inherit; color: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mechanism-title:first-letter { text-transform: uppercase; }
-.mechanism-sub {
-  color: var(--text-secondary); font-size: 14px; margin-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 .status { font-size: 22px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); }
 .status[data-state="live"] { color: var(--live); background: var(--live-bg); border-color: var(--live-border); }
 .status[data-state="live"] .icon { fill: var(--live); }
@@ -314,6 +309,13 @@ button.dot:hover, button.dot:focus-visible, button.dot.active { outline: 2px sol
 .tooltip .tt-quotes li { margin-top: 4px; padding-left: 10px; border-left: 2px solid #3a4656; font-style: italic; }
 .tooltip .tt-entities { margin: 6px 0 0; padding-left: 16px; color: var(--text-primary); }
 .tooltip .tt-entities li { margin-top: 2px; }
+.tooltip .tt-chart svg { display: block; margin-top: 4px; overflow: visible; }
+.tooltip .tt-chart .grid { stroke: #2c3542; stroke-width: 1; }
+.tooltip .tt-chart .axis { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tooltip .tt-chart .series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tooltip .tt-chart .last { stroke: #1c222c; stroke-width: 2; }
+.tooltip .tt-chart .value { fill: var(--text-primary); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tooltip .tt-chart-note { margin-top: 2px; font-size: 12px; color: var(--text-muted); }
 
 /* ── narrow screens ─────────────────────────────────────────────────────── */
 @media (max-width: 900px) {

@@ -17,7 +17,6 @@ const INJURY_KINDS = new Set(["complaint", "finding", "suspected_injury"]);
 
 const LANES = [
   { key: "condition", title: "Patient condition", color: "var(--lane-condition)" },
-  { key: "vitals", title: "Vital signs", color: "var(--lane-vitals)" },
   { key: "medications", title: "Medications", color: "var(--lane-medications)" },
   { key: "interventions", title: "Interventions", color: "var(--lane-interventions)" },
 ];
@@ -98,10 +97,8 @@ const VITAL_NAMES = {
 };
 // The order of the latest vital signs panel; vitals not listed follow, in the order first read.
 const VITAL_ORDER = ["BP", "MAP", "HR", "SpO₂", "RR", "EtCO₂", "Temp", "GCS", "BGL", "Ppeak", "FiO₂"];
-const VITAL_GAP = 20; // s: a reading this close to the previous one belongs to the same set
 
-// Vital signs come in sets (BP, HR, SpO₂, RR… read out within seconds), so each set is one
-// event: a reading joins the current set while it is close in time and its vital isn't in it yet.
+// Each vital sign reading, for the latest vital signs panel.
 function vitalReadings(agg) {
   return asList(agg.vital_signs)
     .map((v) => {
@@ -112,39 +109,33 @@ function vitalReadings(agg) {
     .sort((a, b) => a.t - b.t);
 }
 
-// The latest reading of each vital sign, for the side panel.
+// The numbers of a reading: [systolic, diastolic] for "157/101", else its first number.
+function vitalNumbers(value) {
+  const bp = String(value).match(/^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+  if (bp) return [Number(bp[1]), Number(bp[2])];
+  const n = String(value).match(/-?\d+(?:\.\d+)?/);
+  return n ? [Number(n[0])] : null;
+}
+
+// The latest reading of each vital sign, for the side panel, with all its readings over time.
 function latestVitals(agg) {
-  const latest = new Map();
+  const latest = new Map(), series = new Map();
   for (const r of vitalReadings(agg)) {
     latest.delete(r.short); // re-insert, so vitals not in VITAL_ORDER keep their first-read order
     latest.set(r.short, r);
+    const values = vitalNumbers(r.value);
+    if (!values) continue;
+    if (!series.has(r.short)) series.set(r.short, []);
+    series.get(r.short).push({ t: r.t, values });
   }
   const rank = (s) => (VITAL_ORDER.includes(s) ? VITAL_ORDER.indexOf(s) : VITAL_ORDER.length);
   return [...latest.values()]
     .sort((a, b) => rank(a.short) - rank(b.short))
     .map((r) => ({
       kind: "Vital sign", t: r.t, label: r.short, value: r.value, title: `${r.short} ${r.value}`,
-      details: [["Vital", r.v.standard_name || r.v.entity || r.name]], quotes: r.v.quotes, times: r.v.times,
+      details: [["Vital", r.v.standard_name || r.v.entity || r.name]],
+      chart: { points: series.get(r.short) || [], unit: (String(r.value).match(/^[-\d./]+\s*(.*)$/) || [])[1] || "" },
     }));
-}
-
-function buildVitals(agg) {
-  const readings = vitalReadings(agg);
-  const sets = [];
-  for (const r of readings) {
-    const cur = sets[sets.length - 1];
-    if (cur && r.t - cur[cur.length - 1].t <= VITAL_GAP && !cur.some((o) => o.name === r.name)) cur.push(r);
-    else sets.push([r]);
-  }
-  return sets.map((set) => {
-    const parts = set.map((r) => `${r.short} ${r.value}`);
-    return {
-      kind: "Vital signs", t: set[0].t,
-      title: parts.slice(0, 2).join(" · "), sub: parts.slice(2).join(" · "),
-      details: set.map((r) => [`${r.short} · ${fmtTime(r.t)}`, r.value]),
-      quotes: set.flatMap((r) => r.v.quotes || []),
-    };
-  });
 }
 
 function buildModel(agg) {
@@ -165,7 +156,6 @@ function buildModel(agg) {
       details, quotes: c.quotes, times: c.times,
     };
   });
-  const vitals = buildVitals(agg);
 
   const meds = asList(agg.medications).map((m) => {
     const continuous = String(m.type || "").toLowerCase() === "continuous";
@@ -195,14 +185,14 @@ function buildModel(agg) {
     const rows = summary ? [["Details", summary]] : [];
     if (category) rows.unshift(["Category", category]);
     return {
-      kind: "Intervention", t: it.time, title: capitalize(it.entity || ""), sub: summary || category,
+      kind: "Intervention", t: it.time, title: capitalize(String(it.entity || "").replace(/_/g, " ")), sub: summary || category,
       details: rows, quotes: it.quotes, times: it.times,
     };
   });
 
   const injuries = condition.filter((c) => INJURY_KINDS.has(c.entity));
 
-  return { lanes: { condition, vitals, medications: meds, interventions }, injuries, history, latestVitals: latestVitals(agg) };
+  return { lanes: { condition, medications: meds, interventions }, injuries, history, latestVitals: latestVitals(agg) };
 }
 
 function maxTime(model) {
@@ -232,9 +222,6 @@ function renderHeader(agg, detail) {
   const moi = asList(agg && agg.mechanism_of_injury)[0];
   $("mechanism-title").textContent = moi && moi.entity ? moi.entity : "No mechanism of injury yet";
   $("mechanism-title").title = moi && moi.entity ? moi.entity : "";
-  const quote = moi && (moi.quotes || []).find(Boolean);
-  $("mechanism-sub").textContent = moi ? [isNum(moi.time) ? `reported at ${fmtTime(moi.time)}` : "", quote ? `“${quote}”` : ""]
-    .filter(Boolean).join(" · ") : "";
 
   const status = $("status");
   const st = !detail ? "none" : detail.live ? "live" : "ended";
@@ -769,6 +756,7 @@ function showTooltip(node, item) {
     for (const name of item.entities) ul.append(el("li", null, name));
     tip.append(ul);
   }
+  if (item.chart) tip.append(vitalChart(item.chart));
   const quotes = (item.quotes || []).filter((q) => typeof q === "string" && q.trim());
   if (quotes.length) {
     const ul = el("ul", "tt-quotes");
@@ -784,6 +772,57 @@ function showTooltip(node, item) {
   tip.style.left = Math.max(8, left) + "px";
   tip.style.top = top + "px";
 }
+// A vital sign's readings over time, for its tooltip: one line (two for blood pressure,
+// systolic over diastolic), the latest reading marked and labelled.
+const CHART_W = 300, CHART_H = 130;
+const CHART_PAD = { l: 34, r: 56, t: 10, b: 20 };
+const CHART_COLORS = ["#d95926", "#3987e5"]; // categorical slots 2 and 1, dark steps
+function vitalChart({ points, unit }) {
+  const box = el("div", "tt-chart");
+  if (!points.length) return box;
+  const lines = Math.max(...points.map((p) => p.values.length));
+  const all = points.flatMap((p) => p.values);
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.1 || Math.max(1, Math.abs(hi) * 0.05);
+  lo -= pad; hi += pad;
+  const t0 = points[0].t, t1 = points[points.length - 1].t;
+  const x = (t) => CHART_PAD.l + (t1 > t0 ? (t - t0) / (t1 - t0) : 0.5) * (CHART_W - CHART_PAD.l - CHART_PAD.r);
+  const y = (v) => CHART_PAD.t + (1 - (v - lo) / (hi - lo)) * (CHART_H - CHART_PAD.t - CHART_PAD.b);
+  const fmt = (v) => (Math.abs(hi - lo) < 10 ? v.toFixed(1) : String(Math.round(v)));
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${CHART_W} ${CHART_H}`, width: CHART_W, height: CHART_H, role: "img",
+                             "aria-label": `${points.length} readings from ${fmtTime(t0)} to ${fmtTime(t1)}` });
+  // Recessive grid: the top and bottom of the readings' range, labelled.
+  for (const v of [Math.min(...all), Math.max(...all)]) {
+    svg.append(svgEl("line", { class: "grid", x1: CHART_PAD.l, x2: CHART_W - CHART_PAD.r, y1: y(v), y2: y(v) }),
+               svgEl("text", { class: "axis", x: CHART_PAD.l - 6, y: y(v), "text-anchor": "end", "dominant-baseline": "middle" }, fmt(v)));
+  }
+  const base = CHART_H - CHART_PAD.b;
+  svg.append(svgEl("text", { class: "axis", x: x(t0), y: base + 14, "text-anchor": t1 > t0 ? "start" : "middle" }, fmtTime(t0)));
+  if (t1 > t0) svg.append(svgEl("text", { class: "axis", x: x(t1), y: base + 14, "text-anchor": "end" }, fmtTime(t1)));
+
+  const names = lines > 1 ? ["Sys", "Dia"] : [];
+  for (let k = 0; k < lines; k++) {
+    const pts = points.filter((p) => p.values.length > k);
+    const color = CHART_COLORS[k % CHART_COLORS.length];
+    if (pts.length > 1) {
+      svg.append(svgEl("polyline", { class: "series", stroke: color,
+                                     points: pts.map((p) => `${x(p.t).toFixed(1)},${y(p.values[k]).toFixed(1)}`).join(" ") }));
+    }
+    if (pts.length <= 30) {
+      for (const p of pts) svg.append(svgEl("circle", { class: "pt", cx: x(p.t), cy: y(p.values[k]), r: 2, fill: color }));
+    }
+    const last = pts[pts.length - 1];
+    svg.append(svgEl("circle", { class: "last", cx: x(last.t), cy: y(last.values[k]), r: 4, fill: color }));
+    // Direct label beside the latest point: the value, and which line it is for blood pressure.
+    svg.append(svgEl("text", { class: "value", x: x(last.t) + 8, y: y(last.values[k]), "dominant-baseline": "middle" },
+                     [names[k], fmt(last.values[k])].filter(Boolean).join(" ")));
+  }
+  box.append(svg);
+  box.append(el("div", "tt-chart-note", [`${points.length} reading${points.length > 1 ? "s" : ""}`, unit].filter(Boolean).join(" · ")));
+  return box;
+}
+
 function hideTooltip() { $("tooltip").hidden = true; }
 
 // ── data ────────────────────────────────────────────────────────────────────
