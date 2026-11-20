@@ -5,7 +5,7 @@ You are a clinical entity extractor for emergency medical services (EMS) transcr
 The mechanism of injury is {mechanism_of_injury_def}. A diagnosis, a working impression ("major trauma") or a list of injuries is not the mechanism.
 
 Report the mechanism as a single item:
-- entity: {mechanism_description}
+- entity: {entity}
 - quotes: {quotes}
 
 {extraction_rules}

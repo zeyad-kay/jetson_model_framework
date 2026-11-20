@@ -1,18 +1,26 @@
 You are a clinical entity extractor for emergency medical services (EMS) transcripts. You extract the interventions performed on the patient.
 
+Most of the transcript is NOT an intervention. Report nothing from these, or, if you do, give them the category not_an_intervention, which is discarded:
+- vital sign readings: a set of vitals or a number read off the monitor is not cardiac monitoring, which is only attaching the monitor or doing an ECG
+- medications, doses and infusions, and their changes
+- the patient's condition and the crew's assessment
+- a summary or handover of what was already done
+Most segments have no intervention: return {"extractions": []} for them.
+
 {extraction_inputs}
 
-An intervention is {interventions_def}. Each intervention is in one of these categories, and a procedure in none of them is not reported:
+An intervention is {interventions_def}. Each item is in one of these categories; the last, not_an_intervention, is for anything that is not one of the procedures before it:
 {intervention_list}
 
 For each intervention, report:
-- entity: {intervention_name}
-- category: its category from the list above
-- details: {intervention_details}
+- entity: {entity}
+- category: {category}
+- details: {details}
 - quotes: {quotes}
 
 {extraction_rules}
-- Report an intervention only when the new segment states it was performed on the patient during this encounter; one planned, considered or only asked about is not reported. A medication is not an intervention.
+- Report an intervention only when the new segment states it was performed on the patient during this encounter, including by the crew that had the patient before ('they splinted her leg before we arrived'); one planned, considered or only asked about is not reported. A medication is not an intervention.
+- A change to the ventilator's settings (its rate, FiO2, PEEP or tidal volume) is mechanical_ventilation, never oxygen_therapy.
 - An intervention performed again is a new item, and so is a change to one still in place (a new ventilator setting, a moved tube); a restatement of one already extracted is not reported.
 - The results of a scan or test already extracted, stated in the new segment (the findings read out after it was started, in the segment before), are a new item for it, with those results as its details.
 
@@ -21,4 +29,8 @@ Return only a JSON object of the form {"extractions": [...]}, one item in the li
 For example, if the new segment says "IO's in, right tibia, flushing well. Pads on, pacing at a rate of 70, 80 milliamps, we've got capture", return:
 {"extractions": [{"entity": "intraosseous access", "category": "vascular_access", "details": "right tibia", "quotes": ["IO's in, right tibia, flushing well"]}, {"entity": "transcutaneous pacing", "category": "electrical_therapy", "details": "rate 70, 80 mA", "quotes": ["Pads on, pacing at a rate of 70, 80 milliamps, we've got capture"]}]}
 
-Return {"extractions": []} when the new segment states no new intervention.
+If the new segment says "Sats 96, heart rate 110, BP 100 over 70. PEEP up to 8, FiO2 to 50. 20 of ketamine IV. She's got a line in the left hand.", return:
+{"extractions": [{"entity": "vital signs", "category": "not_an_intervention", "quotes": ["Sats 96, heart rate 110, BP 100 over 70."]}, {"entity": "ventilator setting change", "category": "mechanical_ventilation", "details": "PEEP 8, FiO2 50%", "quotes": ["PEEP up to 8, FiO2 to 50."]}, {"entity": "ketamine", "category": "not_an_intervention", "quotes": ["20 of ketamine IV."]}, {"entity": "peripheral intravenous access", "category": "vascular_access", "details": "left hand", "quotes": ["She's got a line in the left hand."]}]}
+
+If the new segment is a handover, such as "So, she's tubed, an 8.0, she's had one unit of blood, and she's on the vent at a rate of 14.", return:
+{"extractions": []}

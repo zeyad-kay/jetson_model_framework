@@ -14,10 +14,10 @@ The patient's condition is {patient_condition_def}. Each item is one complaint, 
 {patient_condition_entity_list}
 
 For each item, report:
-- entity: its kind from the list above
-- standard_name: {condition_name}
+- entity: {entity}
+- standard_name: {standard_name}
 - body_site: {body_site}
-- quotes: {quotes}; the quotes are the item's content, so quote what states the condition itself, including the question it answers when the answer alone does not ("Where's the pain?" for "My back.")
+- quotes: {quotes}
 
 {extraction_rules}
 - Report each complaint, mental status, finding or suspected injury as its own item: "a cut over the eye, the wrist looks deformed" is two findings, and pain in the hip and in the knee is two complaints.

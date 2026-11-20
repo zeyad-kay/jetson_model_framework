@@ -76,7 +76,21 @@ class LLMModel(metaclass=SingletonMeta):
         else:
             raise FileNotFoundError(f"prompt not found: {prompt_path}")
         shared_path = Path(prompt_path).parent / "_shared.yaml"
-        return {Path(f).stem: cls._render(Path(f).read_text(), shared_path) for f in files}
+        names = [Path(f).stem for f in files]
+        if os.path.isdir(prompt_path):
+            cls._check_field_sections(shared_path, names)
+        return {name: cls._render(Path(f).read_text(), shared_path, name) for name, f in zip(names, files)}
+
+    @staticmethod
+    def _check_field_sections(shared_path: Path, names: list[str]) -> None:
+        """Every <name>_fields section of shared_path must be named after a prompt of names."""
+        import yaml
+
+        shared = (yaml.safe_load(shared_path.read_text()) if shared_path.exists() else None) or {}
+        orphans = [s for s in shared if s.endswith("_fields") and s[:-len("_fields")] not in names]
+        if orphans:
+            raise ValueError(f"{shared_path}: {', '.join(orphans)} named after no prompt"
+                             f" (a fields section is <prompt>_fields, one of {', '.join(n + '_fields' for n in names)})")
 
     @classmethod
     def _prompt_fragments(cls, shared: dict) -> dict[str, str]:
@@ -85,12 +99,14 @@ class LLMModel(metaclass=SingletonMeta):
         return {}
 
     @classmethod
-    def _render(cls, text: str, shared_path: Path) -> str:
-        """Substitutes the shared {fragment} placeholders of shared_path (_shared.yaml) into a prompt.
+    def _render(cls, text: str, shared_path: Path, name: str = "") -> str:
+        """Substitutes the shared {fragment} placeholders of shared_path (_shared.yaml) into the
+        prompt called name (its file's stem, e.g. "vital_signs").
 
-        definitions.X becomes {X_def}; the entries of every *_fields section (common_fields,
-        vital_sign_fields, ...) and of instructions become {X}. Subclasses add their own
-        fragments with _prompt_fragments(). Fragments may use fragments.
+        definitions.X becomes {X_def}; the entries of instructions become {X}, in every prompt;
+        the entries of <name>_fields (e.g. vital_signs_fields), the fields the prompt's
+        extractor reports, become {X} in this prompt only. Subclasses add their own fragments
+        with _prompt_fragments(). Fragments may use fragments.
         Braces that aren't a placeholder (the JSON in a prompt) are left untouched; a placeholder
         left unfilled is an error.
         """
@@ -98,9 +114,8 @@ class LLMModel(metaclass=SingletonMeta):
 
         shared = (yaml.safe_load(shared_path.read_text()) if shared_path.exists() else None) or {}
         fragments = {}
-        for section, entries in shared.items():
-            if section.endswith("_fields") or section == "instructions":
-                fragments.update(entries or {})
+        fragments.update(shared.get("instructions") or {})
+        fragments.update(shared.get(f"{name}_fields") or {})
         fragments.update({k + "_def": v for k, v in (shared.get("definitions") or {}).items()})
         fragments.update(cls._prompt_fragments(shared))
         for _ in range(2):  # twice, for the placeholders inside fragments
@@ -271,7 +286,8 @@ class QwenExtractor(LLMModel):
         and, from intervention_categories in _shared.yaml, which must be exactly
         schema.Intervention.CATEGORIES:
 
-        {intervention_list}        one "- <category>: <definition>" line each
+        {intervention_list}        one "- <category>: <definition>" line each, then the
+                                   not_an_intervention category (its definition in _shared.yaml)
         {intervention_categories}  the categories, comma-separated, underscores shown as spaces
 
         and, from medication_routes in _shared.yaml, which must be exactly the routes of
@@ -286,7 +302,11 @@ class QwenExtractor(LLMModel):
                              f"missing {sorted(set(schema.Intervention.CATEGORIES) - set(categories))}, "
                              f"unknown {sorted(set(categories) - set(schema.Intervention.CATEGORIES))}")
         order = schema.Intervention.CATEGORIES
-        fragments["intervention_list"] = "\n".join(f"- {c}: {categories[c]}" for c in order)
+        not_one = shared.get(schema.Intervention.NOT_AN_INTERVENTION)
+        if not not_one:
+            raise ValueError(f"_shared.yaml has no {schema.Intervention.NOT_AN_INTERVENTION} definition")
+        fragments["intervention_list"] = "\n".join(
+            [f"- {c}: {categories[c]}" for c in order] + [f"- {schema.Intervention.NOT_AN_INTERVENTION}: {not_one}"])
         fragments["intervention_categories"] = ", ".join(c.replace("_", " ") for c in order)
         routes = shared.get("medication_routes") or {}
         if set(routes) != set(schema.Medication.ROUTES):
@@ -306,27 +326,60 @@ class QwenExtractor(LLMModel):
             fragments[f"{c}_entity_list"] = "\n".join(f"- {e}: {described[e]}" for e in entities)
         return fragments
 
+    JSON_REPAIRS = 4  # stray closing brackets _extract_json drops from one reply
+
     @staticmethod
     def _extract_json(reply: str) -> dict | None:
-        """The first balanced {...} object in a model reply, parsed; None if there is none."""
+        """The first {...} object in a model reply, parsed; None if there is none.
+
+        The model sometimes closes an item with a wrong bracket ({"extractions": [{...}}]} or
+        {"extractions": [{...}}). A closing bracket where the JSON can't have one is dropped,
+        and brackets still open at the end are closed, and the parse retried, up to
+        JSON_REPAIRS times; anything else that doesn't parse gives None.
+        """
         s = re.sub(r"<think>.*?</think>", "", reply, flags=re.S)
         s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s.strip(), flags=re.S)
         i = s.find("{")
         if i < 0:
             return None
-        depth = 0
-        for j in range(i, len(s)):
-            if s[j] == "{":
-                depth += 1
-            elif s[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        obj = json.loads(s[i:j + 1])
-                    except ValueError:
-                        return None
-                    return obj if isinstance(obj, dict) else None
+        s = s[i:]
+        decoder = json.JSONDecoder()
+        for _ in range(QwenExtractor.JSON_REPAIRS + 1):
+            try:
+                obj, _ = decoder.raw_decode(s)  # ignores whatever follows the object
+            except json.JSONDecodeError as e:
+                if e.pos < len(s) and s[e.pos] in "}]":
+                    s = s[:e.pos] + s[e.pos + 1:]  # a stray closing bracket
+                    continue
+                closers = QwenExtractor._open_brackets(s) if e.pos >= len(s.rstrip()) else None
+                if closers:
+                    s = s.rstrip() + closers  # brackets left open at the end
+                    continue
+                return None
+            return obj if isinstance(obj, dict) else None
         return None
+
+    @staticmethod
+    def _open_brackets(s: str) -> str | None:
+        """The closing brackets for those s leaves open, innermost first; None if s ends inside
+        a string or closes a bracket it never opened."""
+        stack, in_string, escaped = [], False, False
+        for ch in s:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+            elif ch in "}]":
+                if not stack or stack.pop() != ch:
+                    return None
+        return None if in_string else "".join(reversed(stack))
 
     @property
     def parse_failures(self) -> int:

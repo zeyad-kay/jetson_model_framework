@@ -623,10 +623,10 @@ DEMOGRAPHICS: dict[str, type] = {cls.ENTITY: cls for cls in (Age, Sex, Weight, H
 
 @dataclass(kw_only=True)
 class MedicalHistory:
-    """The patient's own history, their family's, or a comorbidity; the content is in its quotes.
+    """The patient's own history, their family's; the content is in its quotes.
     The three have the same fields, so they share this class."""
 
-    ENTITIES: ClassVar[tuple[str, ...]] = ("family_history", "patient_history", "comorbidity")
+    ENTITIES: ClassVar[tuple[str, ...]] = ("family_history", "patient_history")
 
     entity: str
     standard_name: Optional[str] = None
@@ -698,6 +698,11 @@ class MechanismOfInjury:
 
 # --- interventions ----------------------------------------------------------------------------
 
+def _category_name(category: Any) -> str:
+    """An intervention category as the schema spells it ("Blood product" is blood_product)."""
+    return re.sub(r"[\s-]+", "_", str(category or "").strip().lower())
+
+
 @dataclass(kw_only=True)
 class Intervention:
     """A procedure performed on the patient: what was done (entity, e.g. "endotracheal
@@ -709,6 +714,9 @@ class Intervention:
         "ultrasound", "cardiac_monitoring", "electrical_therapy", "vascular_access",
         "spinal_motion_restriction", "blood_product", "cardiac_arrest_care",
     )
+    # The category the model gives an item that is not an intervention after all (a drug, a
+    # vital sign reading); not one of CATEGORIES, so parse() discards it, without an error.
+    NOT_AN_INTERVENTION: ClassVar[str] = "not_an_intervention"
 
     entity: str
     category: str
@@ -718,7 +726,7 @@ class Intervention:
     def __post_init__(self):
         if not self.entity.strip():
             raise ValidationError("'entity' is missing")
-        self.category = re.sub(r"[\s-]+", "_", self.category.strip().lower())
+        self.category = _category_name(self.category)
         if self.category not in self.CATEGORIES:
             raise ValidationError(f"category {self.category!r} is not one of {', '.join(self.CATEGORIES)}")
         _check_quotes(self)
@@ -948,6 +956,8 @@ def _parse(category: str, reply: Any, time_of: Optional[TimeOf]) -> tuple[Any, l
             elif category == "mechanism_of_injury":
                 items.append(MechanismOfInjury.from_dict(d, time_of))
             elif category == "interventions":
+                if isinstance(d, dict) and _category_name(d.get("category")) == Intervention.NOT_AN_INTERVENTION:
+                    continue  # the model's own "this isn't an intervention": discarded, not an error
                 items.append(Intervention.from_dict(d, time_of))
             elif category == "medications":
                 items.append(_parse_medication(d, time_of))

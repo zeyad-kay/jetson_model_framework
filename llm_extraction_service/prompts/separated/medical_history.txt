@@ -14,8 +14,8 @@ Medical history is {medical_history_def}. Each item is one condition, surgery, m
 {medical_history_entity_list}
 
 For each item, report:
-- entity: its kind from the list above
-- quotes: {quotes}; the quotes are the item's content, so quote what states the condition, medication, allergy or symptom itself
+- entity: {entity}
+- quotes: {quotes}
 
 {extraction_rules}
 - Report each condition, surgery, medication, allergy or symptom as its own item, and one already extracted only when the new segment says more about it; a restatement is not reported.

@@ -6,8 +6,8 @@ Demographics are {demographics_def}:
 {demographics_entity_list}
 
 For each demographic, report:
-- entity: its name from the list above
-- value: {number}; for sex, "male" or "female"
+- entity: {entity}
+- value: {value}
 - unit: {unit}
 - quotes: {quotes}
 

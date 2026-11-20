@@ -6,10 +6,13 @@ A vital sign is {vital_signs_def}. The vital signs are:
 {vital_signs_entity_list}
 
 For each reading, report:
-- entity: its name from the list above
-- value: {number}; not for blood_pressure
-- systolic and diastolic: for blood_pressure only, instead of value: {systolic}; {diastolic}
-- eye, verbal and motor: for gcs only, besides value: {gcs_parts}
+- entity: {entity}
+- value: {value}
+- systolic: {systolic}
+- diastolic: {diastolic}
+- eye: {eye}
+- verbal: {verbal}
+- motor: {motor}
 - unit: {unit}
 - quotes: {quotes}
 
