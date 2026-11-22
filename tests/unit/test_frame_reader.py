@@ -1,4 +1,4 @@
-"""FrameReader (video_service/frames.py): decoding an MPEG-TS file while it is written.
+"""FrameReader (video_service/reader.py): decoding an MPEG-TS file while it is written.
 
 Needs an ffmpeg that reads from pipes and encodes H.264 (the host's minimal build doesn't);
 the tests skip without one. The video service's image has it:
@@ -17,7 +17,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from common.io import write_done  # noqa: E402
-from video_service.frames import FrameReader  # noqa: E402
+from video_service.reader import FrameReader  # noqa: E402
 
 WIDTH, HEIGHT, FPS = 128, 64, 10
 

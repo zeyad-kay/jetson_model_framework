@@ -5,7 +5,7 @@ from common.io import write_jpeg, write_text
 from common.log import get_logger
 from common.service import WorkerService
 from video_service.config import Config
-from video_service.frames import FrameReader
+from video_service.reader import FrameReader
 from video_service.model import Sam3
 
 log = get_logger(__name__)
