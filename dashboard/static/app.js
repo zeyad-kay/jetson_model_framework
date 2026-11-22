@@ -1,5 +1,5 @@
 // Trauma timeline monitor: polls the dashboard server for a session's ePCR (built from its
-// structured/ folder by dashboard/epcr.py) and draws it. Times in the ePCR are seconds
+// extractions/ folder by dashboard/epcr.py) and draws it. Times in the ePCR are seconds
 // from the start of the recording, so the timeline shows elapsed time.
 "use strict";
 
@@ -12,6 +12,8 @@ const LABEL_GAP = 14;           // px between labels on the same row
 const ROW_H = 62;               // px per label row
 const STEM_MIN = 18;            // px of stem below the nearest row
 const MAX_ROWS = 3;             // label rows per lane; events beyond them get a dot only (details on hover)
+// A session's state (dashboard/server.py, Sessions.summary) as the status badge words it.
+const STATE_LABELS = { recording: "Recording", processing: "Processing", done: "Done", stalled: "Stalled" };
 // Patient condition kinds that go on the injuries panel (mental status doesn't).
 const INJURY_KINDS = new Set(["complaint", "finding", "suspected_injury"]);
 
@@ -235,11 +237,48 @@ function renderHeader(agg, detail) {
   $("mechanism-title").textContent = moi && moi.entity ? moi.entity : "No mechanism of injury yet";
   $("mechanism-title").title = moi && moi.entity ? moi.entity : "";
 
+  renderStatus(detail);
+  renderDownload(detail);
+}
+
+// The download button: a link to the zip of the session's recordings once the server has
+// stopped recording and exported them (detail.download), else disabled, saying why.
+function renderDownload(detail) {
+  const link = $("download");
+  const download = detail && detail.download;
+  if (download) {
+    link.href = download.url;
+    link.setAttribute("download", "");
+    link.setAttribute("aria-disabled", "false");
+    link.title = `Download ${download.files.join(" and ")} (zip)`;
+  } else {
+    link.removeAttribute("href");
+    link.removeAttribute("download");
+    link.setAttribute("aria-disabled", "true");
+    const recording = asList(detail && detail.waiting).some((w) => w.endsWith("recording"));
+    link.title = !detail ? "No session"
+      : recording ? "The recordings can be downloaded once the session has ended"
+      : "No exported recordings (yet)";
+  }
+}
+
+// The status badge: the session's state, and whatever went wrong (a marker whose status isn't
+// "ok"). The tooltip says when it last changed, what it is waiting for, and every problem.
+function renderStatus(detail) {
   const status = $("status");
-  const st = !detail ? "none" : detail.live ? "live" : "ended";
+  const st = detail && STATE_LABELS[detail.state] ? detail.state : "none";
+  const problems = asList(detail && detail.problems);
   status.dataset.state = st;
-  $("status-text").textContent = st === "live" ? "Live" : st === "ended" ? "Ended" : "No session";
-  status.title = detail && detail.updated ? `Last update ${new Date(detail.updated * 1000).toLocaleTimeString()}` : "";
+  status.dataset.problem = String(problems.length > 0);
+  const problem = problems.length === 1 ? `${problems[0].what} ${problems[0].status}`
+    : problems.length > 1 ? `${problems.length} problems` : null;
+  $("status-text").textContent = [STATE_LABELS[st] || "No session", problem].filter(Boolean).join(" · ");
+  const waiting = asList(detail && detail.waiting);
+  status.title = [
+    detail && detail.updated ? `Last update ${new Date(detail.updated * 1000).toLocaleTimeString()}` : null,
+    st !== "done" && waiting.length ? `Waiting for: ${waiting.join(", ")}` : null,
+    ...problems.map((p) => `${p.what}: ${p.status}`),
+  ].filter(Boolean).join("\n");
 }
 
 // ── injuries ────────────────────────────────────────────────────────────────
@@ -912,7 +951,8 @@ async function loadSessions() {
     const today = date && date.toDateString() === new Date().toDateString();
     const started = date ? date.toLocaleString([], today ? { hour: "2-digit", minute: "2-digit" }
                                                          : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-    const opt = el("option", null, [s.id, started, s.live ? "live" : ""].filter(Boolean).join(" · "));
+    const note = [s.state && s.state !== "done" ? s.state : "", asList(s.problems).length ? "⚠" : ""].join(" ").trim();
+    const opt = el("option", null, [s.id, started, note].filter(Boolean).join(" · "));
     opt.value = s.id;
     select.append(opt);
   }

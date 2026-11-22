@@ -13,10 +13,16 @@
   --lane-medications: #3987e5;   /* categorical slot 1, dark step */
   --lane-interventions: #199e70; /* categorical slot 3, dark step */
   --lane-condition: #c98500;     /* categorical slot 4, dark step */
-  /* Status: live / ended. */
+  /* Status badge: recording, processing, and a problem (a failed or abandoned step). */
   --live: #3fbf6f;
   --live-bg: #0f2318;
   --live-border: #1f5a37;
+  --processing: #6fa8e8;
+  --processing-bg: #101b2b;
+  --processing-border: #24456e;
+  --warn: #e0a030;
+  --warn-bg: #2a1f0c;
+  --warn-border: #6b4b14;
   --injury: #d9534f;
   --wound-box: var(--lane-medications); /* bounding boxes drawn on wound images, and their switch */
   --radius: 14px;
@@ -48,8 +54,8 @@ button, select { font: inherit; color: inherit; }
 .top {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 16px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 12px;
 }
 .card {
   display: flex;
@@ -69,17 +75,31 @@ button, select { font: inherit; color: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mechanism-title:first-letter { text-transform: uppercase; }
-.status { font-size: 22px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); }
-.status[data-state="live"] { color: var(--live); background: var(--live-bg); border-color: var(--live-border); }
-.status[data-state="live"] .icon { fill: var(--live); }
-.status[data-state="live"] .icon { animation: pulse 2s ease-in-out infinite; }
+/* The status, session picker and download are kept compact, leaving the width to the mechanism. */
+.status { gap: 8px; padding: 12px 16px; font-size: 16px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); }
+.status .icon { width: 20px; height: 20px; }
+.status[data-state="recording"] { color: var(--live); background: var(--live-bg); border-color: var(--live-border); }
+.status[data-state="recording"] .icon { fill: var(--live); animation: pulse 2s ease-in-out infinite; }
+.status[data-state="processing"] { color: var(--processing); background: var(--processing-bg); border-color: var(--processing-border); }
+.status[data-state="processing"] .icon { fill: var(--processing); animation: pulse 2s ease-in-out infinite; }
+/* Stalled, or any step that failed: amber, after the states so it wins. */
+.status[data-state="stalled"], .status[data-problem="true"] { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-border); }
+.status[data-state="stalled"] .icon, .status[data-problem="true"] .icon { fill: var(--warn); }
 @keyframes pulse { 50% { opacity: 0.45; } }
-.session-picker { flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; }
-.session-picker .label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+.session-picker { flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; padding: 12px 16px; }
+.session-picker .label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
 .session-picker select {
-  background: transparent; border: 0; padding: 0; font-size: 15px; max-width: 300px; cursor: pointer;
+  background: transparent; border: 0; padding: 0; font-size: 13px; max-width: 200px; cursor: pointer;
 }
 .session-picker select option { background: var(--surface-2); }
+/* The recordings' download: a link once the session has stopped recording and they are exported. */
+.download { justify-content: center; width: 56px; padding: 0; text-decoration: none; }
+.download .icon { width: 22px; height: 22px; fill: var(--text-primary); }
+.download:hover { border-color: var(--text-muted); }
+.download:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }
+.download[aria-disabled="true"] { color: var(--text-muted); cursor: default; }
+.download[aria-disabled="true"] .icon { fill: var(--text-muted); }
+.download[aria-disabled="true"]:hover { border-color: var(--border); }
 
 /* ── section shells ─────────────────────────────────────────────────────── */
 section { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -345,7 +365,8 @@ button.dot:hover, button.dot:focus-visible, button.dot.active { outline: 2px sol
   .monitor { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto; min-height: 100vh; padding: 16px; }
   .top { grid-template-columns: minmax(0, 1fr) auto; }
   .mechanism { grid-column: 1 / -1; order: 3; }
-  .session-picker { grid-column: 1 / -1; order: 4; }
+  .session-picker { grid-column: 1; order: 4; }
+  .download { order: 5; width: auto; }  /* as wide as the status above it */
   .timeline .panel { height: 70vh; }
   .history .panel { max-height: 40vh; }
   .injury-summary { flex: none; max-height: 40vh; }
