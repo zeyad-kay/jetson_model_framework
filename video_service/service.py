@@ -1,9 +1,11 @@
 from pathlib import Path
+from typing import Any, Optional
 
 from common.io import write_jpeg, write_text
+from common.log import get_logger
 from common.service import WorkerService
 from video_service.config import Config
-from common.log import get_logger
+from video_service.frames import FrameReader
 from video_service.model import Sam3
 
 log = get_logger(__name__)
@@ -12,52 +14,68 @@ log = get_logger(__name__)
 class VideoService(WorkerService):
     """Segments each session's video as it is recorded.
 
-    Idles until queue_session() names a session, then reads <session>/video/video.ts,
-    segments it with SAM 3 and saves each frame in which an object is detected with a score of at
-    least min_score to <session>/video/wounds/<seconds>.jpg (the folder is made with the first one),
-    with those objects' bounding boxes in <seconds>.box, one "x0 y0 x1 y1" line of pixels per box.
-    <seconds> is the frame's position in the video, zero-padded with milliseconds (000012.340), so
-    the names sort in video order. It runs until the session ends (end_session(), or
-    queue_session() of the next session). shutdown() ends the current session and makes run() return.
+    Works through the sessions the server creates (see WorkerService), in its steps:
+
+    reader   a FrameReader: the next frame of <session>/video/video.ts, which the server
+             appends to as the session goes on (H.264 in MPEG-TS): {"frame": HxWx3 uint8
+             RGB array, "seconds": its position in the video}.
+    predict  Sam3.predict(): the objects SAM 3 tracks for the prompt on the frame.
+    save     if an object is detected with a score of at least min_score, writes the frame to
+             <session>/video/wounds/<seconds>.jpg (the folder is made with the first one), with
+             those objects' bounding boxes in <seconds>.box, one "x0 y0 x1 y1" line of pixels
+             per box. <seconds> is zero-padded with milliseconds (000012.340), so the names
+             sort in video order.
+    cleanup  (the base's) stops the model's video and writes video/wounds.done ({"status":
+             "ok", "failed" or "abandoned"}), which marks the frames in wounds/ final, even if
+             the session failed (its output marker).
+
+    The session ends once the server marks video.ts complete (video.ts.done) and its last
+    frame is segmented. It also ends if the stream turns out broken, or once nothing in the
+    session has changed for abandon_timeout seconds without that marker ("abandoned").
     """
 
     def __init__(self, config: Config):
-        super().__init__(config.sessions_dir, config.poll_interval, log)
+        super().__init__("video_service", config.sessions_dir, config.poll_interval, log,
+                         status_path=config.status_path, max_session_age=config.max_session_age,
+                         abandon_timeout=config.abandon_timeout)
         self.config = config
+        # The current session's state, set by open_reader() and setup().
+        self._frames: Optional[FrameReader] = None
+        self._output_dir: Optional[Path] = None
+        self._num_segmented = 0
+        self._num_saved = 0
 
-    def _load_model(self) -> Sam3:
-        cfg = self.config
-        model = Sam3(
-            prompt=cfg.prompt,
-            idle_timeout=cfg.idle_timeout,
-            probe_timeout=cfg.probe_timeout,
-            drain_idle=cfg.drain_idle,
-        )
+    def load_model(self) -> Sam3:
+        model = Sam3(prompt=self.config.prompt)
         log.info("model ready: %s (prompt %r)", type(model).__name__, model.prompt)
         return model
 
-    def _process_session(self, session_dir: Path) -> None:
-        video_path = session_dir / "video" / "video.ts"
-        output_dir = session_dir / "video" / "wounds"
-        min_score = self.config.min_score
-        log.info("segmenting %s, writing frames with a detection scoring >= %.2f to %s", video_path, min_score, output_dir)
-        num_frames = 0
-        num_saved = 0
-        try:
-            if not self._wait_for_file(video_path):
-                return
-            for frame, _object_ids, scores, boxes, seconds in self._model.segment(str(video_path)):
-                kept = [box for score, box in zip(scores, boxes) if float(score) >= min_score]
-                if kept:
-                    # Boxes first, so whoever sees the image can already read its boxes.
-                    name = f"{seconds:010.3f}"
-                    lines = "".join(" ".join(str(round(float(v))) for v in box) + "\n" for box in kept)
-                    write_text(output_dir / f"{name}.box", lines)
-                    write_jpeg(output_dir / f"{name}.jpg", frame, self.config.jpeg_quality)
-                    num_saved += 1
-                num_frames += 1
-                if num_frames % 100 == 0:
-                    log.debug("segmented %d frames (%.2fs), saved %d", num_frames, seconds, num_saved)
-        finally:
-            log.info("segmented %d frames, saved %d to %s", num_frames, num_saved, output_dir)
+    def output_path(self, session_dir: Path) -> Path:
+        return session_dir / "video" / "wounds"
 
+    def open_reader(self, session_dir: Path) -> FrameReader:
+        self._frames = FrameReader(session_dir / "video" / "video.ts", probe_timeout=self.config.probe_timeout)
+        return self._frames
+
+    def setup(self, session_dir: Path) -> None:
+        self._output_dir = session_dir / "video" / "wounds"
+        self._num_segmented = self._num_saved = 0
+        log.info("segmenting %s, writing frames with a detection scoring >= %.2f to %s",
+                 self._frames.path, self.config.min_score, self._output_dir)
+        self._model.start()
+
+    def save(self, inputs: dict, outputs: dict[str, Any]) -> None:
+        if self._num_segmented == 0:
+            log.info("video stream: %dx%d at %.2f fps", self._frames.width, self._frames.height, self._frames.fps)
+        min_score = self.config.min_score
+        kept = [box for score, box in zip(outputs["scores"], outputs["boxes"]) if float(score) >= min_score]
+        if kept:
+            # Boxes first, so whoever sees the image can already read its boxes.
+            name = f"{inputs['seconds']:010.3f}"
+            lines = "".join(" ".join(str(round(float(v))) for v in box) + "\n" for box in kept)
+            write_text(self._output_dir / f"{name}.box", lines)
+            write_jpeg(self._output_dir / f"{name}.jpg", inputs["frame"], self.config.jpeg_quality)
+            self._num_saved += 1
+        self._num_segmented += 1
+        if self._num_segmented % 100 == 0:
+            log.debug("segmented %d frames (%.2fs), saved %d", self._num_segmented, inputs["seconds"], self._num_saved)

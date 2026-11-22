@@ -141,7 +141,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -215,8 +215,8 @@ services:
     # Host networking so the default --host 127.0.0.1 reaches the server on this machine.
     network_mode: host
 
-  # Per-service integration tests: each drives one service directly over its bridge
-  # socket, without the server, and checks its output. Needs the service running:
+  # Per-service integration tests: each drives one service on its own, without the server,
+  # through a session folder made for that service alone, and checks its output. Needs the service running:
   #   docker compose run --rm asr_test       # asr_service
   #   docker compose run --rm video_test     # video_service
   #   docker compose run --rm llm_extraction_test    # llm_extraction_service
@@ -232,9 +232,6 @@ services:
       - type: bind
         source: ./sessions
         target: /sessions
-      - type: bind
-        source: ./run
-        target: /run/bridge
       - type: bind
         source: ./logs
         target: /logs

@@ -2,19 +2,21 @@
 extraction/main.py).
 
 An integration client tests one model service on its own, without the server:
-it creates a session folder the way the server does, drives the service over
-its bridge socket (queue_session / end_session), writes the service's input
-into the session as it would arrive live (with ffmpeg for audio and video, as
-the server's recorder would; segment by segment for the extraction service, as
-the ASR would), then waits for the service to finish the session and checks its output.
+it creates a session folder the way the server does, with a session.json naming only
+the service under test (which finds the session on disk; the other services leave it
+alone), writes the service's input into the session as it would arrive live (with
+ffmpeg for audio and video, as the server's recorder would; segment by segment for the
+extraction service, as the ASR would), marks the input complete (<input>.done, as the
+server and the ASR do; "failed" if it could not be written), then waits for the service
+to finish the session and checks its output.
 
 Each service has its own folder: main.py (the client), inputs/ (what the client feeds
 the service) and ground_truth/ (what the output is compared against).
 
 Output goes to a log file, not the console (testlog.py). Only the standard library is used. The clients need the same view of the
-shared volumes as the services (the sessions folder, the bridge sockets and
-the logs), and root to connect to the root-owned sockets, so on the Jetson
-they run in the test container (tests/Dockerfile, see docker-compose.yml).
+shared volumes as the services (the sessions folder and the logs), and root to write
+into the root-owned sessions folder, so on the Jetson they run in the test container
+(tests/Dockerfile, see docker-compose.yml).
 """
 
 import argparse
@@ -22,7 +24,6 @@ import json
 import logging
 import secrets
 import shlex
-import socket
 import subprocess
 import time
 from collections.abc import Callable
@@ -32,7 +33,7 @@ import testlog
 from testlog import fail, log
 
 # The subfolders every session has (server/sessions.py).
-SUBDIRS = ("audio", "transcript", "video", "structured")
+SUBDIRS = ("audio", "transcript", "video", "extractions")
 
 
 # Writes the service's input into a session folder; returns (ok, description of what it did).
@@ -44,12 +45,10 @@ def add_common_args(parser: argparse.ArgumentParser, service: str, log_name: str
     """Options every integration client takes. Defaults are the container paths of .env.example."""
     parser.add_argument("--sessions-dir", type=Path, default=Path("/sessions"),
                         help="the shared sessions folder (default: /sessions)")
-    parser.add_argument("--bridge", type=Path, default=Path(f"/run/bridge/{service}.sock"),
-                        help=f"the service's bridge socket (default: /run/bridge/{service}.sock)")
     parser.add_argument("--log-file", type=Path, default=Path(f"/logs/{log_name}.log"),
                         help=f"the service's log, watched for the end of the session (default: /logs/{log_name}.log)")
     parser.add_argument("--timeout", type=float, default=timeout,
-                        help=f"seconds to wait for the service to finish after end_session (default: {timeout:g})")
+                        help=f"seconds to wait for the service to finish once the input is complete (default: {timeout:g})")
     if ffmpeg:
         parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg binary (default: ffmpeg)")
     parser.add_argument("--dry-run", action="store_true",
@@ -70,8 +69,8 @@ def require_file(path: Path) -> Path:
     return path
 
 
-def create_session(sessions_dir: Path) -> tuple[str, Path]:
-    """Makes a new session folder with the server's layout; returns (session_id, path).
+def create_session(sessions_dir: Path, service: str) -> tuple[str, Path]:
+    """Makes a new session folder with the server's layout, for `service` alone; returns (session_id, path).
 
     Ids are prefixed with "it-" so test sessions are easy to tell apart.
     """
@@ -85,24 +84,10 @@ def create_session(sessions_dir: Path) -> tuple[str, Path]:
             continue
         for name in SUBDIRS:
             (path / name).mkdir()
+        # Last, as the server does: the service may pick the session up from here on.
+        write_json_atomic(path / "session.json", {"id": session_id, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                                  "services": [service]})
         return session_id, path
-
-
-def bridge_send(socket_path: Path, message: dict, timeout: float = 10.0) -> dict:
-    """Sends one message to a service's bridge and returns its reply."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
-        try:
-            sock.connect(str(socket_path))
-        except OSError as exc:
-            fail(f"can't reach the service at {socket_path}: {exc}")
-        sock.sendall(json.dumps(message).encode() + b"\n")
-        line = sock.makefile("rb").readline()
-    if not line:
-        fail(f"{socket_path} closed the connection")
-    reply = json.loads(line)
-    log.info("%s -> %s", message["command"], reply)
-    return reply
 
 
 def record(cmd: list[str], output: Path) -> int:
@@ -131,12 +116,14 @@ def record(cmd: list[str], output: Path) -> int:
 
 
 def ffmpeg_feed(cmd: list[str], input_name: str) -> tuple[Feed, str]:
-    """A feed that records ffmpeg's stdout into <session>/input_name, and its dry-run description."""
+    """A feed that records ffmpeg's stdout into <session>/input_name, then marks it complete
+    (input_name.done), as the server does when it stops recording; and its dry-run description."""
     def feed(session_dir: Path) -> tuple[bool, str]:
         code = record(cmd, session_dir / input_name)
         log.info("ffmpeg finished (exit code %s)", code)
+        write_done(session_dir / input_name)
         return code == 0, f"ffmpeg wrote {input_name} (exit code {code})"
-    return feed, f"{shlex.join(cmd)} > <session>/{input_name}"
+    return feed, f"{shlex.join(cmd)} > <session>/{input_name} && touch <session>/{input_name}.done"
 
 
 def write_json_atomic(path: Path, obj) -> None:
@@ -144,6 +131,12 @@ def write_json_atomic(path: Path, obj) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+
+
+def write_done(path: Path, status: str = "ok") -> None:
+    """Marks path complete, as common.io.write_done does: <path>.done holding {"status": status}."""
+    write_json_atomic(path.with_name(path.name + ".done"), {"status": status})
+    log.info("marked %s complete", path.name)
 
 
 def session_log(log_file: Path, session_id: str) -> list[str]:
@@ -198,8 +191,8 @@ class Checks:
 
 
 def run(service: str, args: argparse.Namespace, feed: Feed, dry_run: str,
-        verify: Callable[[Path, str, Checks], None]) -> None:
-    """The whole test: session, queue_session, feed, end_session, wait, verify(session_dir, session_id, checks).
+        verify: Callable[[Path, str, Checks], None], input_name: str) -> None:
+    """The whole test: session, feed (which marks <session>/input_name complete), wait, verify(session_dir, session_id, checks).
 
     Exits 0 if every check passed, 1 otherwise. With --dry-run, prints `dry_run` instead.
     Everything else goes to this run's log file (testlog.setup, unless the caller set it up already).
@@ -210,11 +203,8 @@ def run(service: str, args: argparse.Namespace, feed: Feed, dry_run: str,
 
     if not log.handlers:
         testlog.setup(service, args.test_log_dir)
-    session_id, session_dir = create_session(args.sessions_dir)
+    session_id, session_dir = create_session(args.sessions_dir, service)
     log.info("session %s at %s", session_id, session_dir)
-    queued = bridge_send(args.bridge, {"command": "queue_session", "session_id": session_id})
-    if queued.get("ok") is not True:
-        fail(f"{service} did not accept the session: {queued.get('error')}")
 
     fed, fed_message = False, "the input was not written"
     try:
@@ -223,7 +213,9 @@ def run(service: str, args: argparse.Namespace, feed: Feed, dry_run: str,
         log.warning("interrupted, ending the session")
         fed_message = "interrupted while writing the input"
     finally:
-        bridge_send(args.bridge, {"command": "end_session"})
+        if not fed:
+            # The input may not be marked complete: the service would wait for it forever.
+            write_done(session_dir / input_name, "failed")
 
     checks = Checks()
     log.info("results:")

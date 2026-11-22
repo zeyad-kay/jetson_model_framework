@@ -10,7 +10,7 @@ def main() -> None:
     config = Config.load()
     setup_logging("video_service", level=config.log_level, log_file=config.log_file, also_stderr=True)
     log.info("starting video_service")
-    run_service(VideoService(config), config.bridge_path, log)
+    run_service(VideoService(config))
     log.info("video_service stopped")
 
 

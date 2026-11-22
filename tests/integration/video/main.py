@@ -1,10 +1,9 @@
 """Integration test for the video service (video_service), on its own.
 
-Creates a session, queues it on the video service over its bridge, then
-writes video/inputs/video.mp4's video in real time into <session>/video/video.ts as
-H.264 in MPEG-TS, as the server records it. When the file has been played
-out it ends the session, waits for the service to finish, and checks the
-frames it saved: <session>/video/wounds/*.jpg.
+Creates a session for the video service, then writes video/inputs/video.mp4's video
+in real time into <session>/video/video.ts as H.264 in MPEG-TS, as the server records
+it. When the file has been played out it marks it complete (video.ts.done), waits for
+the service to finish, and checks the frames it saved: <session>/video/wounds/*.jpg.
 
     docker compose run --rm video_test
     docker compose run --rm video_test --video-file /tests/integration/video/inputs/clip.mp4
@@ -72,7 +71,7 @@ def main() -> None:
 
     video = harness.require_file(args.video_file)
     feed, dry_run = harness.ffmpeg_feed(ffmpeg_cmd(args.ffmpeg, video), "video/video.ts")
-    harness.run("video_service", args, feed, dry_run, verify)
+    harness.run("video_service", args, feed, dry_run, verify, "video/video.ts")
 
 
 if __name__ == "__main__":
