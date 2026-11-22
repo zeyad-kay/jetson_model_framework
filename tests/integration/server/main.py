@@ -22,8 +22,8 @@ Checks, in order:
                 has a path for it. After publishing --seconds of audio and video and
                 stop_session: audio/audio.pcm holds about that much 16 kHz mono 16-bit
                 audio, video/video.ts is H.264 of about that length, both are marked
-                complete {"status": "ok"}, audio.mp3 and video.mp4 were exported, and the
-                MediaMTX path is gone
+                complete {"status": "ok"}, audio.mp3 and video.mp4 were exported (in the
+                background, after the reply), and the MediaMTX path is gone
     reconnect   a publisher that drops and comes back within one session is appended to
                 the same recordings
     replacing   start_session while a session is active ends that one first: its
@@ -199,6 +199,17 @@ def stop(client: Client, session_id: str, checks: Checks) -> None:
                  f"stop_session stops session {session_id}")
 
 
+def wait_for_files(paths: list[Path], timeout: float) -> float:
+    """Waits until every path exists (the server exports in the background, after stop_session
+    replies, and writes each export atomically); returns the seconds it took, or -1 on timeout."""
+    start = time.monotonic()
+    while not all(p.exists() for p in paths):
+        if time.monotonic() - start > timeout:
+            return -1
+        time.sleep(0.1)
+    return time.monotonic() - start
+
+
 def check_marked(session_dir: Path, checks: Checks) -> None:
     for name in ("audio/audio.pcm", "video/video.ts"):
         marker = read_json(session_dir / f"{name}.done")
@@ -252,6 +263,9 @@ def check_recording(args: argparse.Namespace, client: Client, media: Media, chec
     checks.check(codec == "h264" and duration is not None and args.seconds - SLACK <= duration <= args.seconds + 0.5,
                  f"video.ts is {codec}, {duration}s of frames, about the {args.seconds:g}s published")
     check_marked(session_dir, checks)
+    waited = wait_for_files([session_dir / "audio" / "audio.mp3", session_dir / "video" / "video.mp4"], args.timeout)
+    checks.check(waited >= 0, f"the recordings were exported in the background, {waited:.1f}s after stop_session replied"
+                 if waited >= 0 else f"the recordings weren't exported within {args.timeout:g}s")
     mp3, _ = probe(session_dir / "audio" / "audio.mp3")
     checks.check(mp3 is not None and abs(mp3 - seconds) < 0.5, f"audio.mp3 was exported ({mp3}s)")
     mp4, codec = probe(session_dir / "video" / "video.mp4")

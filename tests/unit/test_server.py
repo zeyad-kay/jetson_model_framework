@@ -170,3 +170,130 @@ def test_the_manager_reports_every_service(tmp_path):
     assert manager.start() == expected
     assert manager.status() == expected
     manager.stop()
+
+
+# --- exports ----------------------------------------------------------------------------
+
+from server import coordinator as server_coordinator  # noqa: E402
+from server.sessions import export, unexported  # noqa: E402
+
+
+def recorded(sessions_dir, name, audio=b"pcm", video=b"ts", marked=True, exported=()):
+    """A session folder whose recordings hold `audio` / `video` (None: no file), marked complete
+    if `marked`, with the exports named in `exported` ("audio.mp3", "video.mp4")."""
+    from conftest import make_session
+
+    folder = make_session(sessions_dir, name)
+    for rel, data in (("audio/audio.pcm", audio), ("video/video.ts", video)):
+        if data is not None:
+            (folder / rel).write_bytes(data)
+        if marked:
+            (folder / f"{rel}.done").write_text('{"status": "ok"}')
+    for name in exported:
+        (folder / ("audio" if name.endswith("mp3") else "video") / name).write_bytes(b"x")
+    return folder
+
+
+def test_unexported_finds_complete_recordings_without_their_export(tmp_path):
+    recorded(tmp_path, "both_missing")
+    recorded(tmp_path, "video_missing", exported=["audio.mp3"])
+    recorded(tmp_path, "exported", exported=["audio.mp3", "video.mp4"])
+    recorded(tmp_path, "still_recording", marked=False)
+    recorded(tmp_path, "nothing_published", audio=b"", video=None)
+    (tmp_path / "not_a_session" / "audio").mkdir(parents=True)
+    assert [f.name for f in unexported(tmp_path)] == ["both_missing", "video_missing"]
+    assert unexported(tmp_path / "missing") == []
+
+
+def test_export_converts_both_recordings_and_can_skip_existing_exports(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server_sessions, "pcm_to_mp3", lambda src, dst, rate, log: calls.append((dst.name, rate)) or True)
+    monkeypatch.setattr(server_sessions, "ts_to_mp4", lambda src, dst, log: calls.append((dst.name, None)) or False)
+    folder = recorded(tmp_path, "s1", exported=["audio.mp3"])
+    assert export(folder, 16000) is False  # the video failed, but the audio was still tried
+    assert calls == [("audio.mp3", 16000), ("video.mp4", None)]
+    calls.clear()
+    assert export(folder, 16000, skip_existing=True) is False
+    assert calls == [("video.mp4", None)]
+
+
+class FakeMediaClient:
+    def add_path(self, name):
+        pass
+
+    def delete_path(self, name):
+        pass
+
+
+@pytest.fixture
+def coordinator(tmp_path, monkeypatch):
+    c = Coordinator(Config(sessions_dir=str(tmp_path), services=(), monitor=False))
+    c._media.client = FakeMediaClient()
+    monkeypatch.setattr(c._media, "start", lambda: None)
+    monkeypatch.setattr(c._media, "stop", lambda: None)
+    yield c
+    c._exporter.shutdown(wait=False, cancel_futures=True)
+
+
+def test_stop_session_replies_before_the_export_and_it_runs_in_the_background(coordinator, monkeypatch):
+    import threading
+
+    release, exported = threading.Event(), []
+
+    def slow_export(folder, rate, skip_existing=False):
+        release.wait(5)
+        exported.append((folder.name, threading.current_thread().name))
+        return True
+
+    monkeypatch.setattr(server_coordinator, "export", slow_export)
+    session = coordinator.start_session().session
+    assert coordinator.stop_session() is session  # returns while the export waits
+    assert done_marker(session.audio_pcm).exists() and done_marker(session.video_ts).exists()
+    assert exported == []
+    release.set()
+    coordinator._exporter.shutdown(wait=True)
+    assert exported[0][0] == session.id and exported[0][1].startswith("export")
+
+
+def test_a_failing_export_is_logged_and_doesnt_fail_stop_session(coordinator, monkeypatch, caplog):
+    def broken(folder, rate, skip_existing=False):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(server_coordinator, "export", broken)
+    session = coordinator.start_session().session
+    coordinator.stop_session()
+    coordinator._exporter.shutdown(wait=True)
+    assert f"exporting session {session.id} failed" in caplog.text
+
+
+def test_start_exports_what_a_previous_run_left_unexported(tmp_path, coordinator, monkeypatch):
+    cut_off = recorded(tmp_path, "cut_off", marked=False)  # abort_unfinished marks it first
+    half = recorded(tmp_path, "half", exported=["audio.mp3"])
+    recorded(tmp_path, "done", exported=["audio.mp3", "video.mp4"])
+    exported = []
+    monkeypatch.setattr(server_coordinator, "export",
+                        lambda folder, rate, skip_existing=False: exported.append((folder.name, skip_existing)) or True)
+    coordinator.start()
+    coordinator._exporter.shutdown(wait=True)  # every queued export done
+    assert sorted(exported) == [(cut_off.name, True), (half.name, True)]
+
+
+def test_stop_finishes_the_export_under_way_and_drops_the_queued_ones(tmp_path, coordinator, monkeypatch):
+    import threading
+
+    for name in ("a", "b", "c"):
+        recorded(tmp_path, name)
+    started, release, exported = threading.Event(), threading.Event(), []
+
+    def slow_export(folder, rate, skip_existing=False):
+        started.set()
+        release.wait(5)
+        exported.append(folder.name)
+        return True
+
+    monkeypatch.setattr(server_coordinator, "export", slow_export)
+    coordinator.start()
+    assert started.wait(5)
+    threading.Timer(0.1, release.set).start()
+    coordinator.stop()
+    assert exported == ["a"]  # b and c are left for the next start

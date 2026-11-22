@@ -13,6 +13,8 @@ log = get_logger(__name__)
 _SUBDIRS = ("audio", "transcript", "video", "extractions")
 # The recordings of a session's stream, relative to its folder.
 _RECORDINGS = ("audio/audio.pcm", "video/video.ts")
+# What each recording is exported to once it is complete, next to it.
+_EXPORTS = {"audio/audio.pcm": "audio/audio.mp3", "video/video.ts": "video/video.mp4"}
 
 
 def abort_unfinished(sessions_dir: Union[str, Path]) -> list[str]:
@@ -42,6 +44,50 @@ def abort_unfinished(sessions_dir: Union[str, Path]) -> list[str]:
     return aborted
 
 
+def export(folder: Union[str, Path], sampling_rate: int, skip_existing: bool = False) -> bool:
+    """Converts a session's recordings to audio/audio.mp3 and video/video.mp4, each written
+    atomically (see common.io), so a file that exists is complete. Call once recording has
+    stopped. skip_existing leaves an export that already exists alone.
+
+    Tries both even if the first fails. True if both succeeded (or were skipped); failures are
+    logged.
+    """
+    folder = Path(folder)
+    audio_pcm, audio_mp3 = folder / "audio" / "audio.pcm", folder / "audio" / "audio.mp3"
+    video_ts, video_mp4 = folder / "video" / "video.ts", folder / "video" / "video.mp4"
+    audio = (skip_existing and audio_mp3.exists()) or pcm_to_mp3(audio_pcm, audio_mp3, sampling_rate, log)
+    video = (skip_existing and video_mp4.exists()) or ts_to_mp4(video_ts, video_mp4, log)
+    return audio and video
+
+
+def unexported(sessions_dir: Union[str, Path]) -> list[Path]:
+    """The sessions with a complete recording that hasn't been exported: one that is marked
+    complete, isn't empty, and has no export next to it.
+
+    Called when the server starts (after abort_unfinished), for the sessions a previous run
+    didn't export: cut off by a crash, killed while exporting, or still recording when the
+    server was stopped.
+    """
+    try:
+        folders = sorted(Path(sessions_dir).iterdir())
+    except FileNotFoundError:
+        return []
+    out = []
+    for folder in folders:
+        if not (folder / "session.json").is_file():
+            continue
+        for recording, exported in _EXPORTS.items():
+            path = folder / recording
+            try:
+                recorded = done_marker(path).exists() and path.stat().st_size > 0
+            except OSError:  # no recording
+                continue
+            if recorded and not (folder / exported).exists():
+                out.append(folder)
+                break
+    return out
+
+
 class Session:
     """One session: its folder on disk and the recording of its stream.
 
@@ -53,14 +99,14 @@ class Session:
     start() begins recording the session's stream to audio/audio.pcm and
     video/video.ts (written directly by ffmpeg, see AudioListener and
     VideoListener), stop() ends it and marks both files complete (audio.pcm.done,
-    video.ts.done; see common.io.done_marker), and export() then converts the raw files
-    to audio.mp3 and video.mp4. A session is used once: start, stop, export.
+    video.ts.done; see common.io.done_marker). export() (this module's) then converts the
+    raw files to audio.mp3 and video.mp4; the Coordinator runs it in the background. A
+    session is used once: start, then stop.
     """
 
     def __init__(self, session_id: str, path: Path, media: MediaServer, sampling_rate: int):
         self.id = session_id
         self.path = path
-        self._sampling_rate = sampling_rate
         stream_url = media.read_url(session_id)
         self._audio = AudioListener(
             stream_url, media.client, session_id, self.audio_pcm, sampling_rate=sampling_rate
@@ -134,7 +180,7 @@ class Session:
         """Stops recording, then marks audio.pcm and video.ts complete. Safe to call more than once.
 
         The markers come after the recorders have stopped (each stop() waits for its ffmpeg),
-        so they are written after the last byte, and before export(), which can take a while:
+        so they are written after the last byte, and before the export, which can take a while:
         the services finish the session without waiting for it. Written even if a file was
         never created (no stream was published), so the services stop waiting for it.
         """
@@ -146,12 +192,3 @@ class Session:
             finally:
                 write_done(self.audio_pcm)
                 write_done(self.video_ts)
-
-    def export(self) -> bool:
-        """Converts the raw recordings to mp3 and mp4. Call after stop().
-
-        Tries both even if the first fails. True if both succeeded; failures are logged.
-        """
-        audio = pcm_to_mp3(self.audio_pcm, self.audio_mp3, self._sampling_rate, log)
-        video = ts_to_mp4(self.video_ts, self.video_mp4, log)
-        return audio and video
