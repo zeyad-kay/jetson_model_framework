@@ -18,7 +18,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -252,3 +252,12 @@ services:
   llm_extraction_test:
     <<: *service_test
     entrypoint: ["python3", "/tests/integration/extraction/main.py"]
+
+  # Integration test for the server on its own: drives it like the phone app and checks what it
+  # records. Needs only the server (no GPU, no model services), and no real session in progress:
+  #   docker compose up -d server && docker compose run --rm server_test
+  server_test:
+    <<: *service_test
+    entrypoint: ["python3", "/tests/integration/server/main.py"]
+    # Host networking, like the server: the control port, RTSP and MediaMTX's local-only API.
+    network_mode: host

@@ -75,6 +75,26 @@ def write_json(path: Union[str, Path], obj) -> None:
     write_text(path, json.dumps(obj, indent=1, ensure_ascii=False))
 
 
+def done_marker(path: Union[str, Path]) -> Path:
+    """The marker that says `path` is complete: <path>.done next to it (audio.pcm -> audio.pcm.done).
+
+    Its writer creates it once it will write `path` no more; whoever reads `path` as it
+    grows can then read the rest and stop. Check the marker before reading `path`, so
+    the last write before the marker isn't missed.
+    """
+    path = Path(path)
+    return path.with_name(path.name + ".done")
+
+
+def write_done(path: Union[str, Path], status: str = "ok") -> None:
+    """Marks `path` (a file or a folder) complete: writes done_marker(path) as {"status": status}.
+
+    status is "ok", or why it ended otherwise ("failed"). Written even after a failure, so
+    whoever waits for `path` stops waiting.
+    """
+    write_json(done_marker(path), {"status": status})
+
+
 def write_jpeg(path: Union[str, Path], image, quality: int = 90) -> None:
     """Writes an HxWx3 uint8 RGB array as a JPEG, replacing the file atomically so readers never see a partial write."""
     from PIL import Image  # only the services that write images need Pillow

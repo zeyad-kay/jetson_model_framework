@@ -1,89 +1,81 @@
+import json
 import threading
+import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Optional, Union
 
-from common.bridge import BridgeClient
 from common.log import get_logger
 
 log = get_logger(__name__)
 
 
 class WorkerServiceClient:
-    """A handle on one other service, reached through its bridge socket.
+    """What the server knows about one model service: its heartbeat file.
 
-    The name is the socket file's stem (asr_service.sock -> "asr_service").
-    `up` is the result of the last ping, or None before the first one.
+    The service rewrites the file every few seconds (see WorkerService):
+    {"service", "pid", "state", "session", "updated"}. The name is the file's stem
+    (asr_service.json -> "asr_service"). The service is up if the file was updated within
+    status_timeout seconds and its state is "idle" or "working". `up` is the result of the
+    last check, or None before the first one.
     """
 
-    def __init__(self, path: Union[str, Path], timeout: float):
+    def __init__(self, path: Union[str, Path], status_timeout: float):
         self.path = Path(path)
         self.name = self.path.stem
-        self._client = BridgeClient(self.path, timeout)
+        self._status_timeout = status_timeout
         self.up: Optional[bool] = None
 
-    def send(self, message: dict) -> Optional[dict]:
-        """Sends one JSON message and returns the reply, or None on failure."""
+    def status(self) -> Optional[dict]:
+        """The service's last heartbeat, or None if it has none (or it can't be read right now)."""
         try:
-            return self._client.send(message)
-        except (OSError, ValueError) as exc:
-            log.debug("message to %s failed: %s", self.name, exc)
+            status = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
+        return status if isinstance(status, dict) else None
 
-    def start(self) -> bool:
-        """Checks that the service is running and answering pings."""
-        return self.ping()
-
-    def start_session(self, session_id: str) -> bool:
-        """Tells the service to start working on a session. True if it replied ok."""
-        reply = self.send({"command": "queue_session", "session_id": session_id})
-        return self._ok("queue_session", reply)
-
-    def stop_session(self) -> bool:
-        """Tells the service to stop its current session. True if it replied ok."""
-        return self._ok("end_session", self.send({"command": "end_session"}))
-
-    def _ok(self, command: str, reply: Optional[dict]) -> bool:
-        ok = reply is not None and reply.get("ok") is True
-        if not ok:
-            log.warning("%s: %s failed (%s)", self.name, command, reply)
-        return ok
-
-    def ping(self) -> bool:
-        """Pings the service, records the result in `up`, and logs when it changes."""
-        reply = self.send({"command": "ping"})
-        up = reply is not None and reply.get("ok") is True and reply.get("reply") == "pong"
+    def check(self) -> bool:
+        """Reads the heartbeat, records whether the service is up in `up`, and logs when it changes."""
+        status = self.status()
+        up = (
+            status is not None
+            and status.get("state") in ("idle", "working")
+            and isinstance(status.get("updated"), (int, float))
+            and time.time() - status["updated"] <= self._status_timeout
+        )
         if self.up != up:
             self.up = up
             if up:
                 log.info("%s is up", self.name)
             else:
-                log.warning("%s is down", self.name)
+                state = status.get("state") if status else "no heartbeat"
+                log.warning("%s is down (%s)", self.name, state)
         return up
 
 
 class WorkerServiceManager:
-    """Owns every WorkerServiceClient: starting and stopping them together and monitoring their health.
+    """Every WorkerServiceClient: the services the server creates sessions for, and their health.
 
-    If monitor is True, start_services also starts pinging every service in the
-    background and stop_services stops it.
+    If monitor is True, start() also starts checking every service's heartbeat in the
+    background, every monitor_interval seconds (logging when one goes up or down), and
+    stop() stops it.
     """
 
     def __init__(
         self,
         paths: Iterable[Union[str, Path]],
-        timeout: float,
-        ping_interval: float,
+        status_timeout: float,
+        monitor_interval: float,
         monitor: bool = True,
     ):
         self._services: dict[str, WorkerServiceClient] = {}
         for path in paths:
-            service = WorkerServiceClient(path, timeout)
+            service = WorkerServiceClient(path, status_timeout)
             if service.name in self._services:
                 log.warning("ignoring %s: a service named %r already exists", path, service.name)
                 continue
             self._services[service.name] = service
-        self.ping_interval = ping_interval
+        self.monitor_interval = monitor_interval
         self.monitor = monitor
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -94,48 +86,33 @@ class WorkerServiceManager:
     def __iter__(self) -> Iterator[WorkerServiceClient]:
         return iter(self._services.values())
 
+    @property
+    def names(self) -> list[str]:
+        """The services' names, as session.json lists the services a session is for."""
+        return list(self._services)
+
     def status(self) -> dict[str, Optional[bool]]:
         """Returns name -> last known up/down (None if not checked yet)."""
         return {service.name: service.up for service in self}
 
-    def send(self, message: str, service_name: str) -> Optional[dict]:
-        """Sends `message` as a command to the named service and returns its reply.
-
-        Returns None if there is no such service or it doesn't answer.
-        """
-        service = self._services.get(service_name)
-        if service is None:
-            log.warning("no service named %r (have: %s)", service_name, ", ".join(self._services))
-            return None
-        return service.send({"command": message})
+    def check(self) -> dict[str, bool]:
+        """Checks every service's heartbeat now. Returns name -> up."""
+        return {service.name: service.check() for service in self}
 
     def start(self) -> dict[str, bool]:
-        """Makes sure every service is running and answers a ping. Returns name -> up.
-
-        Also starts monitoring if the monitor flag is set.
-        """
-        up = {service.name: service.start() for service in self}
+        """Checks every service's heartbeat. Returns name -> up. Also starts monitoring if the monitor flag is set."""
+        up = self.check()
         if self.monitor:
             self.start_monitoring()
         return up
 
-    def stop(self) -> dict[str, bool]:
-        """Stops the current session on every service, and monitoring if it is on."""
-        delivered = self.stop_session()
+    def stop(self) -> None:
+        """Stops monitoring, if it is on."""
         if self.monitor:
             self.stop_monitoring()
-        return delivered
-
-    def start_session(self, session_id: str) -> dict[str, bool]:
-        """Starts the session on every service. Returns name -> delivered."""
-        return {service.name: service.start_session(session_id) for service in self}
-
-    def stop_session(self) -> dict[str, bool]:
-        """Stops the current session on every service. Returns name -> delivered."""
-        return {service.name: service.stop_session() for service in self}
 
     def start_monitoring(self) -> None:
-        """Pings every service each ping_interval in a background thread. A no-op if already running."""
+        """Checks every service each monitor_interval in a background thread. A no-op if already running."""
         if self._thread is not None:
             return
         self._stop_event.clear()
@@ -151,7 +128,6 @@ class WorkerServiceManager:
 
     def _monitor(self) -> None:
         while True:
-            for service in self:
-                service.ping()
-            if self._stop_event.wait(self.ping_interval):
+            self.check()
+            if self._stop_event.wait(self.monitor_interval):
                 return

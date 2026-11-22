@@ -16,12 +16,12 @@ class CommandHandler:
         # Every command we accept from the client: name -> (description, handler).
         self.commands = {
             "start_session": (
-                "Creates a new session folder, starts it on all services and "
+                "Creates a new session folder, which the services pick up, and "
                 "returns the URL to publish the stream to.",
                 self._start_session,
             ),
             "stop_session": (
-                "Stops the active session on all services and closes it.",
+                "Stops recording the active session (the services finish it) and closes it.",
                 self._stop_session,
             ),
         }
@@ -49,7 +49,7 @@ class CommandHandler:
             "session_id": session.id,
             # Where the client can publish: the address it reached us at.
             "streaming_url": self._coordinator.publish_url(session, local_host),
-            # Which services accepted the session; a false means that service is not working on it.
+            # Which services are up; a false means that service will pick the session up only once it is back.
             "services": services,
         }
 
