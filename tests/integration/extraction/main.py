@@ -1,33 +1,35 @@
 """Integration test for the LLM extraction service (llm_extraction_service), on its own.
 
-Creates a session, queues it on the extraction service over its bridge, then writes
+Creates a session for the extraction service, then writes
 extraction/inputs/segments.json into <session>/transcript/segments.json one segment
 at a time, --interval seconds apart, the way the ASR service writes closed
 segments (the whole list so far, replaced atomically). After the last segment
-it ends the session, waits for the service to finish (it extracts what is
-left and waits LLM_EXTRACTION_DRAIN_IDLE seconds for more), and checks:
+it marks the file complete (segments.json.done, as the ASR does), waits for the
+service to finish (it extracts what is left, then ends), and checks:
 
-    structured/<category>.json        one per category: its records, [{"segment",
+    extractions/<category>.json       one per category: its records, [{"segment",
                                       "extractions": [{...}, ...]}, ...], one per input
                                       segment that added something, in segment order,
                                       none empty; not all empty; every quote time
                                       inside its record's segment
-    structured/medications.json       its records hold actions: a new administration
+    extractions/medications.json      its records hold actions: a new administration
                                       ("given", "started") has its own id, and an update
                                       ("update", "rate_changed", "stopped") names an
                                       administration of an earlier segment by its ref
-    structured/medication_administrations.json
+    extractions/medication_administrations.json
                                       each administration once, merged from those actions
-    structured/progress.json          the last input segment's id, start and end
-    structured/extractions.done       created, marking the files final
+    extractions/progress.json         the last input segment's id, start and end
+    extractions/extractions.done      created, marking the files final
 
 Then it logs a score that never fails the test. It compares all the extracted items
 with extraction/ground_truth/<category>.json, which holds records like the service's
 (segment numbers follow inputs/segments.json), and medications by administration, from
 ground_truth/medication_administrations.json (schema.merge_medications of its
-medications.json), as the service writes them: an item matches when their quotes
-overlap (the words of a quote pair, Jaccard >= 0.5), or, where either has no quotes,
-when the kind is the same. The score counts coverage, not one-to-one matches: per
+medications.json), as the service writes them: an item matches when a quote of each
+says the same thing (their words overlap, Jaccard >= 0.5, or the shorter quote lies 80%
+inside the longer: the ground truth often quotes the whole sentence where the model
+quotes the phrase; a shorter quote of under 4 words only so between items of the same
+kind), or, where either has no quotes, when the kind is the same. The score counts coverage, not one-to-one matches: per
 category, the ground-truth items some extracted item matches (recall), the extracted
 items that match some ground-truth item (precision), and how often a matched pair
 agrees on the kind (KIND_FIELDS: the entity, a medication's standard name, an
@@ -69,8 +71,15 @@ GROUND_TRUTH = HERE / "ground_truth"
 CATEGORIES = ("medications", "interventions", "vital_signs", "mechanism_of_injury", "demographics", "medical_history",
               "patient_condition")
 
-# Scoring: quotes whose words overlap at least this much (Jaccard) count as the same mention.
+# Scoring: two quotes count as the same mention when their words overlap at least QUOTE_MATCH
+# (Jaccard), or when the shorter has at least QUOTE_CONTAINED of its words in the longer.
+# Jaccard alone fails a tight quote of a long sentence ("43-year-old male, about 80 kg" in
+# the sentence around it: 7/17). A shorter quote of under QUOTE_CONTAINED_WORDS words
+# ("my jaw", "chest") is contained in many sentences, so it matches that way only between
+# items of the same kind.
 QUOTE_MATCH = 0.5
+QUOTE_CONTAINED = 0.8
+QUOTE_CONTAINED_WORDS = 4
 # The field naming each category's kind of item, compared for matched items and preferred when
 # matching: the entity, except where it is free text and another field is the fixed one.
 KIND_FIELDS = {"medications": "standard_name", "interventions": "category"}
@@ -96,6 +105,7 @@ def segments_feed(segments: list[dict], interval: float) -> harness.Feed:
             seg = segments[n - 1]
             log.info(f"wrote segment {seg['segment_id']} ({seg['start']:.1f}-{seg['end']:.1f}s, "
                      f"{len(seg.get('text') or [])} words)")
+        harness.write_done(path)  # as the ASR does once it has written its last segment
         return True, f"wrote {len(segments)} segments to transcript/segments.json"
     return feed
 
@@ -111,13 +121,13 @@ def read_json(path: Path):
 ADMINISTRATIONS = "medication_administrations"
 
 
-def load_extractions(structured: Path) -> dict:
-    """{category: records} from structured/<category>.json, and the medication administrations
-    (structured/medication_administrations.json, when there is one); a missing or unreadable
+def load_extractions(folder: Path) -> dict:
+    """{category: records} from extractions/<category>.json, and the medication administrations
+    (extractions/medication_administrations.json, when there is one); a missing or unreadable
     file counts as empty."""
-    out = {c: read_json(structured / f"{c}.json") or [] for c in CATEGORIES}
-    if (structured / f"{ADMINISTRATIONS}.json").is_file():
-        out[ADMINISTRATIONS] = read_json(structured / f"{ADMINISTRATIONS}.json") or []
+    out = {c: read_json(folder / f"{c}.json") or [] for c in CATEGORIES}
+    if (folder / f"{ADMINISTRATIONS}.json").is_file():
+        out[ADMINISTRATIONS] = read_json(folder / f"{ADMINISTRATIONS}.json") or []
     return out
 
 
@@ -165,15 +175,22 @@ def words(text) -> frozenset[str]:
     return frozenset(re.findall(r"[a-z0-9]+", str(text or "").lower()))
 
 
-def quote_overlap(a: dict, b: dict) -> float:
-    """The best word overlap (Jaccard) between a quote of item a and a quote of item b."""
-    best = 0.0
+def quote_overlap(a: dict, b: dict, category: str = "") -> float | None:
+    """The best word overlap (Jaccard) among the pairs of a quote of item a and a quote of item b
+    that count as the same mention (see QUOTE_MATCH); None if no pair does."""
+    same_kind = bool(name(a, category)) and name(a, category) == name(b, category)
+    best = None
     for qa in quotes(a):
         wa = words(qa)
         for qb in quotes(b):
             wb = words(qb)
-            if wa and wb:
-                best = max(best, len(wa & wb) / len(wa | wb))
+            if not (wa and wb):
+                continue
+            shared, shorter = len(wa & wb), min(len(wa), len(wb))
+            jaccard = shared / len(wa | wb)
+            contained = shared / shorter >= QUOTE_CONTAINED and (shorter >= QUOTE_CONTAINED_WORDS or same_kind)
+            if jaccard >= QUOTE_MATCH or contained:
+                best = jaccard if best is None else max(best, jaccard)
     return best
 
 
@@ -192,13 +209,13 @@ def scorable(item: dict, category: str = "") -> bool:
 
 
 def best_match(item: dict, pool: list[dict], category: str = "") -> dict | None:
-    """The item of pool whose quotes overlap item's (at least QUOTE_MATCH), preferring one of
-    the same kind (one utterance often gives several items, e.g. a set of vitals), then the
-    largest overlap; where either has no quotes, one of the same kind instead. None if there
-    is none."""
+    """The item of pool with a quote saying the same as one of item's (see quote_overlap),
+    preferring one of the same kind (one utterance often gives several items, e.g. a set of
+    vitals), then the largest overlap; where either has no quotes, one of the same kind
+    instead. None if there is none."""
     kind = name(item, category)
     candidates = [((kind == name(p, category), overlap), i) for i, p in enumerate(pool)
-                  if (overlap := quote_overlap(item, p)) >= QUOTE_MATCH]
+                  if (overlap := quote_overlap(item, p, category)) is not None]
     if candidates:
         return pool[max(candidates)[1]]
     return next((p for p in pool if not (has_quotes(item) and has_quotes(p)) and kind and kind == name(p, category)), None)
@@ -249,11 +266,11 @@ def ratio(n: int, d: int) -> str:
 
 def verify(session_dir: Path, session_id: str, checks: harness.Checks,
            segments: list[dict], log_file: Path, truth_dir: Path) -> None:
-    structured = session_dir / "structured"
+    folder = session_dir / "extractions"
 
     # --- <category>.json: each category's records ---
-    extractions = {c: read_json(structured / f"{c}.json") for c in CATEGORIES}
-    administrations = read_json(structured / f"{ADMINISTRATIONS}.json")
+    extractions = {c: read_json(folder / f"{c}.json") for c in CATEGORIES}
+    administrations = read_json(folder / f"{ADMINISTRATIONS}.json")
     bad = bad_categories(extractions)
     if not checks.check(not bad, "a <category>.json of records for every category"
                         + (f" (missing or malformed: {bad})" if bad else "")):
@@ -311,11 +328,11 @@ def verify(session_dir: Path, session_id: str, checks: harness.Checks,
 
     # --- progress.json: the last segment taken in ---
     final = segments[-1]
-    progress = read_json(structured / "progress.json")
+    progress = read_json(folder / "progress.json")
     checks.check(progress == {"segment": final["segment_id"], "start": final["start"], "end": final["end"]},
                  f"progress.json names the last segment ({final['segment_id']}); got {progress}")
 
-    checks.check((structured / "extractions.done").is_file(), "extractions.done was created")
+    checks.check((folder / "extractions.done").is_file(), "extractions.done was created")
 
     # --- the model's answers, against the ground truth (a report, never a failure) ---
     score(extractions, truth_dir)
@@ -337,22 +354,23 @@ def main() -> None:
     parser.add_argument("--ground-truth", type=Path, default=GROUND_TRUTH,
                         help=f"ground truth to score against, one <category>.json of records each (default: {GROUND_TRUTH})")
     parser.add_argument("--score", type=Path, metavar="SESSION_DIR",
-                        help="only score the extractions (SESSION_DIR/structured/<category>.json) against the ground truth; "
+                        help="only score the extractions (SESSION_DIR/extractions/<category>.json) against the ground truth; "
                              "the service isn't contacted")
     harness.add_common_args(parser, service="llm_extraction_service", log_name="llm_extraction", timeout=1800.0, ffmpeg=False)
     args = parser.parse_args()
     harness.setup_log("llm_extraction_service", args)
 
     if args.score is not None:
-        harness.require_file(args.score / "structured" / "progress.json")
-        score(load_extractions(args.score / "structured"), args.ground_truth)
+        harness.require_file(args.score / "extractions" / "progress.json")
+        score(load_extractions(args.score / "extractions"), args.ground_truth)
         return
 
     segments = load_segments(harness.require_file(args.segments_file))
     dry_run = (f"write {len(segments)} segments from {args.segments_file} into "
                f"<session>/transcript/segments.json, {args.interval:g}s apart")
     verify_fn = functools.partial(verify, segments=segments, log_file=args.log_file, truth_dir=args.ground_truth)
-    harness.run("llm_extraction_service", args, segments_feed(segments, args.interval), dry_run, verify_fn)
+    harness.run("llm_extraction_service", args, segments_feed(segments, args.interval), dry_run, verify_fn,
+                "transcript/segments.json")
 
 
 if __name__ == "__main__":

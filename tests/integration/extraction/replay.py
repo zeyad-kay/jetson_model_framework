@@ -2,8 +2,8 @@
 prompt change in minutes instead of running the whole integration test.
 
 Each segment of inputs/segments.json is extracted the way the service does it
-(QwenExtractor.apply_segment, so the previous extractions, validation and medication
-resolution are the same), but only for the categories given, and without terminology
+(QwenExtractor.start, then predict per segment, so the previous extractions, validation and
+medication resolution are the same), but only for the categories given, and without terminology
 linking. The records are written to <out>/<category>.json, every raw model reply to
 <out>/replies.jsonl, and the result is scored against ground_truth/ like the test does.
 
@@ -50,35 +50,37 @@ def main() -> None:
 
     cfg = Config.load()
     model = QwenExtractor(model_id=cfg.extract_model, prompt_path=str(Path(cfg.prompts_dir) / "separated"), link=False)
-    model._extracting = {c: c in args.categories for c in model._extracting}
 
     args.out.mkdir(parents=True, exist_ok=True)
     replies = (args.out / "replies.jsonl").open("w")
-    generate = model.generate
+    llm_call = model._llm_call
     current = {}
 
-    def recording_generate(messages):
-        reply = generate(messages)
+    def recording_llm_call(messages):
+        reply = llm_call(messages)
         category = next(c for c, p in model._prompts.items() if p == messages[0]["content"])
         replies.write(json.dumps({"segment": current.get("segment"), "category": category, "reply": reply},
                                  ensure_ascii=False) + "\n")
         replies.flush()
         return reply
 
-    model.generate = recording_generate
+    model._llm_call = recording_llm_call
 
     segments = test.load_segments(test.SEGMENTS)
     if args.segments:
         first, last = args.segments
         segments = [s for s in segments if first <= s["segment_id"] <= last]
-    extractions = {c: [] for c in model._extracting}
+    model.start(categories=args.categories)
+    extractions = {c: [] for c in args.categories}
     started = time.monotonic()
     for s in segments:
         current["segment"] = s["segment_id"]
-        extractions = model.apply_segment(s, extractions)
+        record = model.predict(s)
+        extractions = {c: record[c] for c in args.categories}
         log.info(f"segment {s['segment_id']}: " + ", ".join(
             f"{c} {sum(len(r['extractions']) for r in extractions[c])}" for c in args.categories))
     replies.close()
+    model.stop()
     for c in args.categories:
         (args.out / f"{c}.json").write_text(json.dumps(extractions[c], indent=2, ensure_ascii=False))
     log.info(f"replayed {len(segments)} segments in {time.monotonic() - started:.0f} s;"

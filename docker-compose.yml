@@ -104,7 +104,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
