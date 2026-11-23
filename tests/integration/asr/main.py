@@ -1,11 +1,12 @@
 """Integration test for the ASR service (asr_service), on its own.
 
-Creates a session, queues it on the ASR service over its bridge, then decodes
+Creates a session for the ASR service, then decodes
 asr/inputs/audio.mp3 in real time into <session>/audio/audio.pcm (16-bit mono PCM at
 --sampling-rate, as the server records it). When the file has been played
-out it ends the session, waits for the service to finish, and checks the
-transcript it wrote: transcript.txt, transcript.jsonl and segments.json.
-Against the ground truth in asr/ground_truth/: transcript.txt is scored by
+out it marks it complete (audio.pcm.done), waits for the service to finish, and checks the
+transcript it wrote: transcript.jsonl and segments.json. Against the ground truth in
+asr/ground_truth/: the transcript (transcript.jsonl's fragments joined) is scored, against
+ground_truth/transcript.txt, by
 word error rate (WER), which must be at most --max-wer, and segments.json must
 have the same number of segments, each starting and ending within
 --segment-tolerance seconds of the reference. Word timestamps aren't compared.
@@ -101,10 +102,6 @@ def verify(session_dir: Path, session_id: str, checks: harness.Checks, ground_tr
            max_wer: float, segment_tolerance: float) -> None:
     transcript_dir = session_dir / "transcript"
 
-    txt = transcript_dir / "transcript.txt"
-    text = txt.read_text(encoding="utf-8").strip() if txt.is_file() else ""
-    checks.check(bool(text), f"transcript.txt has text ({len(text.split())} words)")
-
     jsonl = transcript_dir / "transcript.jsonl"
     entries = []
     if jsonl.is_file():
@@ -112,6 +109,9 @@ def verify(session_dir: Path, session_id: str, checks: harness.Checks, ground_tr
             if line.strip():
                 entries.append(json.loads(line))
     checks.check(bool(entries), f"transcript.jsonl has timed entries ({len(entries)})")
+    # The model emits text fragments (tokens), each with its own spacing: joined as they are.
+    text = "".join(str(e.get("text") or "") for e in entries).strip()
+    checks.check(bool(text), f"the transcript has text ({len(text.split())} words)")
 
     segments_path = transcript_dir / "segments.json"
     segments = None
@@ -169,7 +169,7 @@ def main() -> None:
     verify_fn = functools.partial(verify, ground_truth=ground_truth, max_wer=args.max_wer,
                                   segment_tolerance=args.segment_tolerance)
     feed, dry_run = harness.ffmpeg_feed(ffmpeg_cmd(args.ffmpeg, audio, args.sampling_rate), "audio/audio.pcm")
-    harness.run("asr_service", args, feed, dry_run, verify_fn)
+    harness.run("asr_service", args, feed, dry_run, verify_fn, "audio/audio.pcm")
 
 
 if __name__ == "__main__":

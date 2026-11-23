@@ -39,45 +39,12 @@ from pathlib import Path
 INTEGRATION = Path(__file__).resolve().parent.parent / "integration"
 sys.path.insert(0, str(INTEGRATION))
 import testlog  # noqa: E402
+from publish import publish_cmd  # noqa: E402
 from testlog import fail, log  # noqa: E402
 
 AUDIO = INTEGRATION / "asr" / "inputs" / "audio.mp3"
 VIDEO = INTEGRATION / "video" / "inputs" / "video.mp4"
 MODES = ("audio", "video", "both")
-
-
-def publish_cmd(ffmpeg: str, mode: str, url: str, audio: Path, video: Path) -> list[str]:
-    """The ffmpeg command that publishes the inputs for `mode` to `url`.
-
-    -re paces each input at its native rate, like a live camera and mic.
-    Video is re-encoded to H.264 with a keyframe every second and no B-frames:
-    the server records it with -c:v copy, which can only start at a keyframe,
-    so the source file's own (possibly long) GOP would delay the recording.
-    Audio is re-encoded to AAC, which RTSP carries everywhere. Each stream runs
-    to its own end, so in "both" mode the longer file keeps going alone.
-    """
-    cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning"]
-    if mode in ("video", "both"):
-        cmd += ["-re", "-i", str(video)]
-    if mode in ("audio", "both"):
-        cmd += ["-re", "-i", str(audio)]
-
-    if mode == "audio":
-        cmd += ["-map", "0:a:0"]
-    elif mode == "video":
-        cmd += ["-map", "0:v:0"]
-    else:
-        cmd += ["-map", "0:v:0", "-map", "1:a:0"]
-
-    if mode in ("video", "both"):
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-                "-pix_fmt", "yuv420p", "-bf", "0",
-                "-force_key_frames", "expr:gte(t,n_forced*1)", "-sc_threshold", "0"]
-    if mode in ("audio", "both"):
-        cmd += ["-c:a", "aac", "-b:a", "64k"]
-
-    cmd += ["-f", "rtsp", "-rtsp_transport", "tcp", url]
-    return cmd
 
 
 def command(sock: socket.socket, reader, message: dict) -> dict:
@@ -130,7 +97,7 @@ def main() -> None:
             fail(f"could not start a session: {session.get('error')}")
         down = [name for name, ok in (session.get("services") or {}).items() if not ok]
         if down:
-            log.warning("these services did not accept the session: %s", ", ".join(down))
+            log.warning("these services are down (they pick the session up once they are back): %s", ", ".join(down))
 
         url = session["streaming_url"]
         sources = " + ".join(f"{p.name} ({kind})" for p, kind in ((video, "video"), (audio, "audio")) if p)

@@ -6,35 +6,6 @@ from pathlib import Path
 from typing import Union
 
 
-class TranscriptWriter:
-    """Writes transcript text from an ASR model to a text file as it is generated.
-
-    Each piece of text is followed by `separator` and flushed immediately, so
-    the file always reflects everything transcribed so far.
-    """
-
-    def __init__(
-        self, path: Union[str, Path], separator: str = "\n", append: bool = False
-    ):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.separator = separator
-        self._file = open(self.path, "a" if append else "w", encoding="utf-8")
-
-    def write(self, text: str) -> None:
-        self._file.write(text + self.separator)
-        self._file.flush()
-
-    def close(self) -> None:
-        self._file.close()
-
-    def __enter__(self) -> "TranscriptWriter":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-
 class TimedTranscriptWriter:
     """Writes timestamped transcript text as JSON lines: {"t": seconds, "text": ...}.
 

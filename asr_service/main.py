@@ -10,7 +10,7 @@ def main() -> None:
     config = Config.load()
     setup_logging("asr_service", level=config.log_level, log_file=config.log_file, also_stderr=True)
     log.info("starting asr_service")
-    run_service(ASRService(config), config.bridge_path, log)
+    run_service(ASRService(config))
     log.info("asr_service stopped")
 
 

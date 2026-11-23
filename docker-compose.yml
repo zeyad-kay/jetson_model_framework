@@ -48,12 +48,12 @@ services:
       # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
       LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     # healthcheck:
-      # Healthy once the bridge answers a ping with a pong (socket = $BRIDGE_DIR/asr_service.sock).
+      # Healthy while the service's heartbeat ($STATUS_DIR/asr_service.json) is fresh and it is idle or working.
       # test:
       #   - CMD
       #   - python
       #   - -c
-      #   - 'import socket,json;s=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect("/run/bridge/asr_service.sock");s.sendall(b"{\"command\":\"ping\"}\n");r=json.loads(s.makefile("rb").readline());raise SystemExit(0 if r.get("reply")=="pong" else 1)'
+      #   - 'import json,time;s=json.load(open("/run/status/asr_service.json"));raise SystemExit(0 if s.get("state") in ("idle","working") and time.time()-s.get("updated",0)<15 else 1)'
       # interval: 5s
       # timeout: 3s
       # retries: 5
@@ -67,7 +67,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common

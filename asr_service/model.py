@@ -1,85 +1,29 @@
-import os
 import queue
 import threading
-import time
-from typing import Any
-from collections.abc import Generator
+from typing import Any, Optional
 
+import numpy as np
+
+from common.model import StreamingModel
 from common.singleton import SingletonMeta
 
 
-class ASRModel(metaclass=SingletonMeta):
-    """Blueprint for ASR models. Subclasses override transcribe."""
+class _FragmentStreamer:
+    """generate() streamer that decodes each token as soon as it arrives, stamped with position().
 
-    def __init__(self, sampling_rate: int = 16000, channel: str = "mono", bytes_per_sample: int = 2, language: str = "en-US", delay: int = 4):
-        self._sampling_rate = sampling_rate
-        self._channel = channel
-        self._bytes_per_sample = bytes_per_sample
-        self._language = language
-        self._delay = delay
-
-    @property
-    def sampling_rate(self) -> int:
-        """Expected audio sample rate in Hz."""
-        return self._sampling_rate
-
-    @property
-    def channel(self) -> str:
-        """Expected audio channel layout, e.g. "mono"."""
-        return self._channel
-
-    @property
-    def language(self) -> str:
-        """Expected transcription language."""
-        return self._language
-
-    @property
-    def bytes_per_sample(self) -> int:
-        """Expected bytes per sample"""
-        return self._bytes_per_sample
-    
-    @property
-    def delay(self) -> int:
-        """Delay in seconds between what the model is transcribing and the realtime audio"""
-        return self._delay
-
-    def transcribe(self, audio_path: str) -> Generator[tuple[str, float], None, None]:
-        """Transcribe the audio file at audio_path and yields (text, seconds).
-
-        seconds is the position in the audio, from its start, up to which the
-        model had consumed audio when the text came out. Implementations may
-        also yield empty text as a heartbeat while no text is coming.
-
-        The base implementation only validates that the path exists.
-        Subclasses should call super().transcribe(audio_path) before
-        running inference.
-        """
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-        yield "", 0.0
-
-
-class _StopStreaming(Exception):
-    """Raised inside the audio reader when transcribe() is shutting down its decoder thread."""
-
-
-class _TimedTokenStreamer:
-    """generate() streamer that emits text as soon as each token is decoded.
-
-    TextIteratorStreamer holds back the last word until the next word starts,
-    so after a pause the word before it would come out stamped with the time
-    of the word after it. This streamer decodes every token immediately and
-    stamps it with position() as read when the token arrived.
-    Iterating yields (text, seconds); a read raises queue.Empty after `timeout`
-    seconds without text.
+    TextIteratorStreamer holds back the last word until the next word starts, so after a
+    pause the word before it would come out stamped with the time of the word after it.
+    This streamer decodes every token immediately and stamps it with position() as read
+    when the token arrived. take() returns the (text, seconds) fragments decoded since
+    the last take().
     """
 
-    def __init__(self, tokenizer, position, timeout: float):
+    def __init__(self, tokenizer, position):
         self._tokenizer = tokenizer
         self._position = position
-        self._timeout = timeout
-        self._queue = queue.Queue()
-        self._ids = []
+        self._lock = threading.Lock()
+        self._fragments: list[tuple[str, float]] = []
+        self._ids: list[int] = []
         self._prefix_offset = 0
         self._read_offset = 0
 
@@ -88,8 +32,9 @@ class _TimedTokenStreamer:
         prefix_text = decode(self._ids[self._prefix_offset : self._read_offset])
         new_text = decode(self._ids[self._prefix_offset :])
         # A trailing replacement char is a UTF-8 sequence still split across tokens.
-        if len(new_text) > len(prefix_text) and (final or not new_text.endswith("\ufffd")):
-            self._queue.put((new_text[len(prefix_text) :], self._position()))
+        if len(new_text) > len(prefix_text) and (final or not new_text.endswith("�")):
+            with self._lock:
+                self._fragments.append((new_text[len(prefix_text) :], self._position()))
             self._prefix_offset = self._read_offset
             self._read_offset = len(self._ids)
 
@@ -99,24 +44,101 @@ class _TimedTokenStreamer:
 
     def end(self) -> None:
         self._emit(final=True)
-        self._queue.put(None)
 
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        item = self._queue.get(timeout=self._timeout)
-        if item is None:
-            raise StopIteration
-        return item
+    def take(self) -> list[tuple[str, float]]:
+        with self._lock:
+            fragments, self._fragments = self._fragments, []
+        return fragments
 
 
-class Nemotron(ASRModel):
-    """Realtime streaming ASR using nvidia/nemotron-3.5-asr-streaming-0.6b.
+class _ChunkedGenerate:
+    """model.generate() on its own thread, over mel chunks handed to it one at a time.
 
-    transcribe() follows a file that is still being written (e.g. a growing
-    WAV/PCM file), staying `delay` seconds behind the writer so it only reads
-    bytes that have already been flushed, and yields text as it is decoded.
+    Streaming generate() pulls the next chunk from its input_features generator once it has
+    decoded every encoder frame of the chunks before it. feed() hands it a chunk and returns
+    once generate() asks for the next one (or has ended), so that chunk is decoded. The
+    token of the decoding step that asked comes out once the next chunk is fed, or at end().
+    """
+
+    def __init__(self, model, inputs: dict):
+        self._chunks: queue.Queue = queue.Queue()
+        self._changed = threading.Condition()
+        self._requested = 0  # chunks generate() has asked for
+        self._fed = 0  # chunks handed to it
+        self._done = False  # whether generate() has returned
+        self._error: Optional[BaseException] = None
+        self._thread = threading.Thread(
+            target=self._run, args=(model, {**inputs, "input_features": self._features()}),
+            name="asr-generate", daemon=True,
+        )
+
+    def _features(self):
+        while True:
+            with self._changed:
+                self._requested += 1
+                self._changed.notify_all()
+            chunk = self._chunks.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    def _run(self, model, kwargs: dict) -> None:
+        try:
+            model.generate(**kwargs)
+        except BaseException as exc:  # handed to the caller of feed() / end()
+            self._error = exc
+        finally:
+            with self._changed:
+                self._done = True
+                self._changed.notify_all()
+
+    def _raise_error(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("the ASR model's generate() failed") from self._error
+
+    def feed(self, chunk) -> None:
+        """Hands generate() the next chunk and waits until it is decoded."""
+        self._chunks.put(chunk)
+        self._fed += 1
+        if self._fed == 1:
+            self._thread.start()
+        with self._changed:
+            self._changed.wait_for(lambda: self._requested > self._fed or self._done)
+        self._raise_error()
+
+    def end(self, timeout: Optional[float] = None) -> None:
+        """Tells generate() there are no more chunks and waits for it to decode the rest and return."""
+        self._chunks.put(None)
+        if self._fed == 0:
+            return  # never started
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            raise TimeoutError(f"the ASR model's generate() did not end within {timeout:g}s")
+        self._raise_error()
+
+
+class Nemotron(StreamingModel, metaclass=SingletonMeta):
+    """Realtime streaming ASR with nvidia/nemotron-3.5-asr-streaming-0.6b.
+
+        model.start()
+        model.predict({"samples": ..., "final": False})   # {"fragments": [(text, seconds)], "seconds"}
+        ...
+        model.predict({"samples": ..., "final": True})    # the last fragments
+        model.stop()
+
+    The model decodes the audio in chunks, chunk_span(index) of the session's audio: the
+    first one, then chunk_seconds long ones that overlap by the feature extractor's window.
+    Each predict() is handed the next chunk, float32 mono samples at sampling_rate in
+    [-1, 1) (see PcmReader), decodes it, and returns the text fragments (tokens) decoded
+    meanwhile, each stamped with the end of the audio fed to the model when it came out (so
+    accurate to about one chunk), and seconds, the end of the audio fed so far. A fragment
+    can come out one chunk late: the last token of a chunk's decoding comes with the next
+    chunk. With final, samples are the rest of the audio from the next chunk's begin (fewer
+    than a chunk, maybe none): it is padded with silence into a last chunk and decoded if
+    any of it hasn't been yet, and the decoding ends.
+
+    The model's streaming generate() runs on a thread per session, pulling the chunks
+    predict() hands it (see _ChunkedGenerate); predict() returns once they are decoded.
     """
 
     def __init__(
@@ -124,170 +146,110 @@ class Nemotron(ASRModel):
         model_id: str = "nvidia/nemotron-3.5-asr-streaming-0.6b",
         num_lookahead_tokens: int = 6,
         sampling_rate: int = 16000,
-        channel: str = "mono",
-        bytes_per_sample: int = 2,
         language: str = "en-US",
-        delay: int = 2,
         device: str = "cuda",
-        header_bytes: int = 0,
+        end_timeout: float = 60.0,
     ):
-        super().__init__(sampling_rate, channel, bytes_per_sample, language, delay)
-        self._header_bytes = header_bytes
         # Heavy imports are deferred so importing this module stays cheap.
         from transformers import AutoModelForRNNT, AutoProcessor
 
-        self._stop_event = threading.Event()
-        self._finish_event = threading.Event()
+        self.sampling_rate = sampling_rate
+        self.language = language
+        self._end_timeout = end_timeout  # seconds the decoding of the final chunk may take
         self._processor = AutoProcessor.from_pretrained(model_id)
         self._model = AutoModelForRNNT.from_pretrained(model_id).to(device)
         self._processor.set_num_lookahead_tokens(num_lookahead_tokens)
+        self._reset()
+
+    def _reset(self) -> None:
+        self._started = False
+        self._chunks = 0  # chunks fed to the model
+        self._audio_end = 0  # samples fed to the model
+        self._streamer: Optional[_FragmentStreamer] = None
+        self._generate: Optional[_ChunkedGenerate] = None
 
     @property
     def chunk_seconds(self) -> float:
         """Length of the audio chunks the model decodes at a time."""
-        return self._processor.num_samples_per_audio_chunk / self._sampling_rate
+        return self._processor.num_samples_per_audio_chunk / self.sampling_rate
 
     @property
     def streaming_latency_ms(self) -> int:
         """Model-side streaming latency in milliseconds."""
         return self._processor.streaming_latency_ms
 
-    def finish(self) -> None:
-        """Ask a running transcribe() to decode the rest of the file, then end.
+    def chunk_span(self, index: int) -> tuple[int, int]:
+        """The samples [begin, end) of the session's audio that chunk index (from 0) covers.
 
-        The delay margin is dropped, so the audio the writer
-        flushed in the last `delay` seconds is transcribed too.
-        """
-        self._finish_event.set()
+        A chunk after the first starts n_fft // 2 samples before its first mel frame, whose
+        window reaches back that far, so it overlaps the chunk before it."""
+        processor = self._processor
+        if index == 0:
+            return 0, processor.num_samples_first_audio_chunk
+        extractor = processor.feature_extractor
+        start = self._mel_frames(index) * extractor.hop_length - extractor.n_fft // 2
+        return max(start, 0), start + processor.num_samples_per_audio_chunk
 
-    def _wait_for_samples(self, audio_path: str, end_sample: int) -> None:
-        """Block until the file holds `end_sample` samples plus the delay margin.
+    def _mel_frames(self, chunks: int) -> int:
+        """Mel frames fed to the model once it has been fed chunks chunks."""
+        processor = self._processor
+        if chunks == 0:
+            return 0
+        return processor.num_mel_frames_first_audio_chunk + (chunks - 1) * processor.num_mel_frames_per_audio_chunk
 
-        Returns early, possibly short, once finish() is called.
-        """
-        while True:
-            if self._stop_event.is_set():
-                raise _StopStreaming
-            finishing = self._finish_event.is_set()
-            margin = 0 if finishing else int(self._delay * self._sampling_rate)
-            needed_bytes = self._header_bytes + (end_sample + margin) * self._bytes_per_sample
-            if finishing or os.path.getsize(audio_path) >= needed_bytes:
-                return
-            time.sleep(0.1)
+    def start(self) -> None:
+        self.stop()
+        self._started = True
+        self._streamer = _FragmentStreamer(self._processor.tokenizer, lambda: self._audio_end / self.sampling_rate)
 
-    def _read_samples(self, f, audio_path: str, start_sample: int, num_samples: int):
-        import numpy as np
+    def predict(self, inputs: dict) -> dict[str, Any]:
+        if not self._started:
+            raise RuntimeError("Nemotron.predict() before start()")
+        samples = np.asarray(inputs["samples"], dtype=np.float32)
+        final = bool(inputs.get("final"))
+        begin, end = self.chunk_span(self._chunks)
+        if len(samples) > end - begin or (not final and len(samples) != end - begin):
+            raise ValueError(f"chunk {self._chunks} is {end - begin} samples, not {len(samples)}"
+                             + (" (or fewer, with final)" if final else ""))
+        if final:
+            # Fed only if it reaches past the mel frames already decoded.
+            decoded = self._mel_frames(self._chunks) * self._processor.feature_extractor.hop_length
+            if begin + len(samples) > decoded:
+                self._feed(samples, begin, end)
+            generate, self._generate = self._generate, None
+            if generate is not None:
+                generate.end(timeout=self._end_timeout)
+        else:
+            self._feed(samples, begin, end)
+        return {"fragments": self._streamer.take(), "seconds": self._audio_end / self.sampling_rate}
 
-        self._wait_for_samples(audio_path, start_sample + num_samples)
-        f.seek(self._header_bytes + start_sample * self._bytes_per_sample)
-        data = f.read(num_samples * self._bytes_per_sample)
-        data = data[: len(data) // self._bytes_per_sample * self._bytes_per_sample]
-        return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+    def stop(self) -> None:
+        """Ends the session's decoding (dropping what it hasn't output) and releases its state."""
+        generate = self._generate
+        self._reset()
+        if generate is not None:
+            try:
+                generate.end(timeout=5)
+            except Exception:
+                pass  # the session is over: its outputs are no longer wanted
 
-    def _process(self, audio, is_first: bool, num_samples: int):
-        import numpy as np
-
-        # Only short once finish() has cut the wait: pad the tail with silence.
-        audio = np.pad(audio, (0, num_samples - len(audio)))
-        inputs = self._processor(
-            audio,
-            sampling_rate=self._sampling_rate,
+    def _feed(self, samples: np.ndarray, begin: int, end: int) -> None:
+        """Feeds samples, the session's audio from begin, as the chunk [begin, end) (padded with
+        silence if fewer) and waits for it to be decoded."""
+        processor = self._processor
+        is_first = self._chunks == 0
+        features = processor(
+            np.pad(samples, (0, end - begin - len(samples))),
+            sampling_rate=self.sampling_rate,
             is_streaming=True,
             is_first_audio_chunk=is_first,
-            language=self._language,
+            language=self.language,
             return_tensors="pt",
-        )
-        return inputs.to(self._model.device, dtype=self._model.dtype)
-
-    def transcribe(self, audio_path: str) -> Generator[tuple[str, float], None, None]:
-        """Yield (text, seconds) as the (possibly still growing) 16-bit PCM WAV file is decoded.
-
-        seconds is the end of the audio fed to the model so far, so it is
-        accurate to about one audio chunk (the model decodes chunk by chunk).
-        While no text is coming it yields ("", seconds) about every 0.5 s.
-
-        Runs until finish() is called and the file is
-        drained, or the generator is closed.
-        """
-        for _ in super().transcribe(audio_path):  # validates the path exists
-            pass
-
-        self._stop_event.clear()
-        self._finish_event.clear()
-        processor = self._processor
-        model = self._model
-        audio_end = 0  # samples handed to the model so far
-
-        with open(audio_path, "rb") as f:
-            try:
-                first_audio = self._read_samples(
-                    f, audio_path, 0, processor.num_samples_first_audio_chunk
-                )
-            except _StopStreaming:
-                return
-            if len(first_audio) == 0:  # finish() before any audio arrived
-                return
-            first_inputs = self._process(
-                first_audio, is_first=True, num_samples=processor.num_samples_first_audio_chunk
-            )
-            audio_end = len(first_audio)
-
-            def input_features_generator():
-                nonlocal audio_end
-                yield first_inputs.input_features[:, : processor.num_mel_frames_first_audio_chunk, :]
-
-                mel_frame_idx = processor.num_mel_frames_first_audio_chunk
-                hop_length = processor.feature_extractor.hop_length
-                n_fft = processor.feature_extractor.n_fft
-
-                start_idx = mel_frame_idx * hop_length - n_fft // 2
-                while not self._stop_event.is_set():
-                    end_idx = start_idx + processor.num_samples_per_audio_chunk
-                    begin = max(start_idx, 0)
-                    try:
-                        chunk_audio = self._read_samples(f, audio_path, begin, end_idx - begin)
-                    except _StopStreaming:
-                        return
-                    if begin + len(chunk_audio) <= mel_frame_idx * hop_length:
-                        return  # finish() and no audio left that isn't already decoded
-                    audio_end = begin + len(chunk_audio)
-                    yield self._process(
-                        chunk_audio, is_first=False, num_samples=end_idx - begin
-                    ).input_features
-                    if len(chunk_audio) < end_idx - begin:
-                        return  # that was the padded final chunk
-
-                    mel_frame_idx += processor.num_mel_frames_per_audio_chunk
-                    start_idx = mel_frame_idx * hop_length - n_fft // 2
-
-            streamer = _TimedTokenStreamer(
-                processor.tokenizer, lambda: audio_end / self._sampling_rate, timeout=0.5
-            )
-            thread = threading.Thread(
-                target=model.generate,
-                kwargs={
-                    **first_inputs,
-                    "input_features": input_features_generator(),
-                    "streamer": streamer,
-                },
-                daemon=True,
-            )
-            thread.start()
-
-            try:
-                stream_iter = iter(streamer)
-                while not self._stop_event.is_set():
-                    try:
-                        text, seconds = next(stream_iter)
-                    except queue.Empty:
-                        # No new text yet: yield an empty heartbeat so the caller sees
-                        # the audio position advance, then re-check the loop.
-                        yield "", audio_end / self._sampling_rate
-                        continue
-                    except StopIteration:
-                        break
-                    yield text, seconds
-            finally:
-                self._stop_event.set()
-                thread.join(timeout=5)
-
+        ).to(self._model.device, dtype=self._model.dtype)
+        self._audio_end = begin + len(samples)
+        if is_first:
+            self._generate = _ChunkedGenerate(self._model, {**features, "streamer": self._streamer})
+            self._generate.feed(features["input_features"][:, : processor.num_mel_frames_first_audio_chunk, :])
+        else:
+            self._generate.feed(features["input_features"])
+        self._chunks += 1
