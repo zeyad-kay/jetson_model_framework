@@ -177,3 +177,25 @@ def test_the_download_is_a_zip_of_the_exports(tmp_path, sessions):
     with zipfile.ZipFile(io.BytesIO(bytes(out.data))) as zf:
         assert zf.namelist() == ["audio.mp3", "video.mp4"]
         assert zf.read("audio.mp3") == b"a" * 100 and zf.read("video.mp4") == b"v" * 200_000
+
+
+def test_a_client_that_hangs_up_mid_response_is_not_an_error(tmp_path, sessions):
+    """A browser drops an image it no longer wants (stepped past it before it loaded): the
+    write fails with a broken pipe, which the handler absorbs instead of raising (the server
+    would print a traceback for each)."""
+    import io
+
+    from dashboard.server import make_handler
+
+    s = make_session(tmp_path, "s1", services=SERVICES)
+    (s / "video" / "wounds").mkdir()
+    (s / "video" / "wounds" / "000000.000.jpg").write_bytes(b"\xff\xd8" + b"x" * 1000 + b"\xff\xd9")
+
+    class HungUp:  # the connection, as the request handler sees it
+        def makefile(self, mode, bufsize=-1):
+            return io.BytesIO(b"GET /api/sessions/s1/wounds/000000.000.jpg HTTP/1.0\r\n\r\n")
+
+        def sendall(self, data):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    make_handler(sessions)(HungUp(), ("10.0.0.1", 50000), None)  # handles the request on construction

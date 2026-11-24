@@ -236,6 +236,14 @@ def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "dashboard"
 
+        def handle(self) -> None:
+            # The browser drops a response it no longer wants (an image stepped past before
+            # it loaded, a page closed mid-poll); without this each one prints a traceback.
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                log.debug("%s closed the connection before the response was sent", self.address_string())
+
         def do_GET(self) -> None:
             path = unquote(urlsplit(self.path).path)
             if path in ("/", "/index.html"):
