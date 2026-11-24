@@ -71,6 +71,10 @@ class Sam3(StreamingModel, metaclass=SingletonMeta):
         outputs = model(
             inference_session=session,
             frame=frame_inputs.pixel_values[0].to(self._dtype),  # passing a frame enables streaming mode
+            # Must be explicit: by default the session numbers a new frame len(processed_frames),
+            # which repeats indices once _pop_cached_frames() starts dropping old frames. The
+            # tracker then reads stale memories and the pruning below stops matching any frame.
+            frame_idx=self._frame_idx,
             reverse=False,
         )
         processed = processor.postprocess_outputs(

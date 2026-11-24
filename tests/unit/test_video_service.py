@@ -142,6 +142,28 @@ def test_saves_the_frames_with_a_detection_scoring_at_least_min_score(session, r
     assert (wounds / "000000.100.box").read_text() == "0 1 4 2\n"
     assert (wounds / "000000.100.jpg").read_bytes()[:2] == b"\xff\xd8"
     assert reader.closed
+    assert "segmented 5 frames, saved 2 scoring >= 0.50; best score 0.530 at 0.400s" in caplog.text
+
+
+def test_logs_the_best_score_even_when_no_frame_is_saved(session, run_service, caplog):
+    service = make_service(session.parent, FakeSam3(), min_score=0.9)
+    reader = start_session(service, run_service)
+    reader.feed(0, 61, 2, 73)  # detections scoring 0.61 and 0.73, both below 0.9
+    reader.complete = True
+    assert wait_until(lambda: "session s1 finished" in caplog.text)
+
+    assert not (session / "video" / "wounds").exists()
+    assert "segmented 4 frames, saved 0 scoring >= 0.90; best score 0.730 at 0.300s" in caplog.text
+
+
+def test_logs_when_nothing_is_detected(session, run_service, caplog):
+    service = make_service(session.parent, FakeSam3())
+    reader = start_session(service, run_service)
+    reader.feed(0, 2)
+    reader.complete = True
+    assert wait_until(lambda: "session s1 finished" in caplog.text)
+
+    assert "segmented 2 frames, saved 0 scoring >= 0.50; no object detected" in caplog.text
 
 
 def test_keeps_following_the_video_until_it_is_complete(session, run_service, caplog):

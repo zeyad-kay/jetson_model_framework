@@ -59,9 +59,11 @@ class FakeProcessor:
 class FakeModel:
     device = "cpu"
 
-    def __call__(self, inference_session, frame, reverse):
-        # Streaming mode appends the frame to the session's state, under the next frame index.
-        idx = inference_session.frames_seen = getattr(inference_session, "frames_seen", -1) + 1
+    def __call__(self, inference_session, frame, reverse, frame_idx=None):
+        # Streaming mode stores the frame's state under frame_idx. Like transformers'
+        # Sam3VideoInferenceSession.add_new_frame, a missing frame_idx defaults to
+        # len(processed_frames), which repeats indices once old frames are dropped.
+        idx = len(inference_session.processed_frames) if frame_idx is None else frame_idx
         inference_session.processed_frames[idx] = frame
         inference_session.output_dict_per_obj[1]["non_cond_frame_outputs"][idx] = "out"
         inference_session.frames_tracked_per_obj[1][idx] = "tracked"

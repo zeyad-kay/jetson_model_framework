@@ -27,7 +27,9 @@ class VideoService(WorkerService):
              sort in video order.
     cleanup  (the base's) stops the model's video and writes video/wounds.done ({"status":
              "ok", "failed" or "abandoned"}), which marks the frames in wounds/ final, even if
-             the session failed (its output marker).
+             the session failed (its output marker). Before that, finalize_outputs() logs how
+             many frames were segmented and saved, and the best score seen and when, so a
+             session that saved nothing shows how close it came to min_score.
 
     The session ends once the server marks video.ts complete (video.ts.done) and its last
     frame is segmented. It also ends if the stream turns out broken, or once nothing in the
@@ -44,6 +46,8 @@ class VideoService(WorkerService):
         self._output_dir: Optional[Path] = None
         self._num_segmented = 0
         self._num_saved = 0
+        self._best_score: Optional[float] = None  # the highest detection score of the session
+        self._best_seconds = 0.0  # the position in the video of the frame it scored on
 
     def load_model(self) -> Sam3:
         model = Sam3(prompt=self.config.prompt)
@@ -60,6 +64,8 @@ class VideoService(WorkerService):
     def setup(self, session_dir: Path) -> None:
         self._output_dir = session_dir / "video" / "wounds"
         self._num_segmented = self._num_saved = 0
+        self._best_score = None
+        self._best_seconds = 0.0
         log.info("segmenting %s, writing frames with a detection scoring >= %.2f to %s",
                  self._frames.path, self.config.min_score, self._output_dir)
         self._model.start()
@@ -68,7 +74,13 @@ class VideoService(WorkerService):
         if self._num_segmented == 0:
             log.info("video stream: %dx%d at %.2f fps", self._frames.width, self._frames.height, self._frames.fps)
         min_score = self.config.min_score
-        kept = [box for score, box in zip(outputs["scores"], outputs["boxes"]) if float(score) >= min_score]
+        scores = [float(score) for score in outputs["scores"]]
+        if scores:
+            top = max(scores)
+            log.debug("%.3fs: %d object(s), top score %.3f", inputs["seconds"], len(scores), top)
+            if self._best_score is None or top > self._best_score:
+                self._best_score, self._best_seconds = top, inputs["seconds"]
+        kept = [box for score, box in zip(scores, outputs["boxes"]) if score >= min_score]
         if kept:
             # Boxes first, so whoever sees the image can already read its boxes.
             name = f"{inputs['seconds']:010.3f}"
@@ -79,3 +91,11 @@ class VideoService(WorkerService):
         self._num_segmented += 1
         if self._num_segmented % 100 == 0:
             log.debug("segmented %d frames (%.2fs), saved %d", self._num_segmented, inputs["seconds"], self._num_saved)
+
+    def finalize_outputs(self) -> None:
+        if self._best_score is None:
+            best = "no object detected"
+        else:
+            best = f"best score {self._best_score:.3f} at {self._best_seconds:.3f}s"
+        log.info("segmented %d frames, saved %d scoring >= %.2f; %s",
+                 self._num_segmented, self._num_saved, self.config.min_score, best)
