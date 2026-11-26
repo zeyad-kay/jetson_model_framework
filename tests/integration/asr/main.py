@@ -5,8 +5,8 @@ asr/inputs/audio.mp3 in real time into <session>/audio/audio.pcm (16-bit mono PC
 --sampling-rate, as the server records it). When the file has been played
 out it marks it complete (audio.pcm.done), waits for the service to finish, and checks the
 transcript it wrote: transcript.jsonl and segments.json. Against the ground truth in
-asr/ground_truth/: the transcript (transcript.jsonl's fragments joined) is scored, against
-ground_truth/transcript.txt, by
+asr/ground_truth/segments.json: the transcript (transcript.jsonl's fragments joined) is
+scored, against the reference segments' words, by
 word error rate (WER), which must be at most --max-wer, and segments.json must
 have the same number of segments, each starting and ending within
 --segment-tolerance seconds of the reference. Word timestamps aren't compared.
@@ -32,7 +32,7 @@ import harness  # noqa: E402
 from testlog import log  # noqa: E402
 
 AUDIO = HERE / "inputs" / "audio.mp3"
-GROUND_TRUTH = HERE / "ground_truth"  # transcript.txt and segments.json for AUDIO
+GROUND_TRUTH = HERE / "ground_truth"  # segments.json for AUDIO
 
 
 def normalize(text: str) -> list[str]:
@@ -84,6 +84,11 @@ def ffmpeg_cmd(ffmpeg: str, audio: Path, sampling_rate: int) -> list[str]:
     ]
 
 
+def reference_text(segments: list[dict]) -> str:
+    """The transcript of a segments.json: its segments' words, in order."""
+    return " ".join(str(w.get("word") or "") for s in segments for w in s.get("text") or [])
+
+
 def compare_segments(segments: list[dict], reference: list[dict], tolerance: float, checks: harness.Checks) -> None:
     """Same number of segments as the reference, each with its start and end within `tolerance` seconds."""
     if not checks.check(len(segments) == len(reference),
@@ -126,15 +131,15 @@ def verify(session_dir: Path, session_id: str, checks: harness.Checks, ground_tr
 
     if ground_truth is not None:
         log.info("against the ground truth in %s:", ground_truth)
+        reference_segments = json.loads((ground_truth / "segments.json").read_text(encoding="utf-8"))
         if text:
-            reference = normalize((ground_truth / "transcript.txt").read_text(encoding="utf-8"))
+            reference = normalize(reference_text(reference_segments))
             rate, s, d, n = wer(reference, normalize(text))
             checks.check(rate <= max_wer,
                          f"WER {rate:.1%} <= {max_wer:.1%} "
                          f"({len(reference)} words: {s} substituted, {d} deleted, {n} inserted)")
         if segments_ok:
-            reference = json.loads((ground_truth / "segments.json").read_text(encoding="utf-8"))
-            compare_segments(segments, reference, segment_tolerance, checks)
+            compare_segments(segments, reference_segments, segment_tolerance, checks)
 
     if text:
         log.info("transcript (first 300 chars):\n  %s", text[:300])
@@ -146,7 +151,7 @@ def main() -> None:
     parser.add_argument("--sampling-rate", type=int, default=16000,
                         help="PCM sample rate; must match the ASR's SAMPLING_RATE (default: 16000)")
     parser.add_argument("--ground-truth", type=Path,
-                        help=f"folder with the reference transcript.txt and segments.json (default: "
+                        help=f"folder with the reference segments.json (default: "
                              f"{GROUND_TRUTH} for the default audio; none for another --audio-file, "
                              "which skips the ground truth checks)")
     parser.add_argument("--max-wer", type=float, default=0.15,
@@ -162,8 +167,7 @@ def main() -> None:
     if ground_truth is None and audio.resolve() == AUDIO:
         ground_truth = GROUND_TRUTH
     if ground_truth is not None:
-        for name in ("transcript.txt", "segments.json"):
-            harness.require_file(ground_truth / name)
+        harness.require_file(ground_truth / "segments.json")
     else:
         log.info("no ground truth for this audio; skipping the WER and segment checks")
     verify_fn = functools.partial(verify, ground_truth=ground_truth, max_wer=args.max_wer,
