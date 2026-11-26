@@ -1,8 +1,8 @@
-"""Builds the one ePCR the page draws from a session's structured/ folder.
+"""Builds the one ePCR the page draws from a session's extractions/ folder.
 
-The extraction service writes structured/<category>.json, each a log of per-segment records
+The extraction service writes extractions/<category>.json, each a log of per-segment records
 [{"segment", "extractions": [...]}], with every quote a {"text", "time"} object, and
-structured/medication_administrations.json, each medication administration's current state
+extractions/medication_administrations.json, each medication administration's current state
 (see llm_extraction_service/schema.py). This reads them into the shape the page expects:
 
     {"medications": [...], "interventions": [...], "vital_signs": [...], "demographics": [...],
@@ -114,14 +114,14 @@ def _medications(administrations: Any, now: float | None) -> list[dict]:
     return sorted(meds, key=lambda m: m["start_time"] if m["start_time"] is not None else 1e12)
 
 
-def build(structured: Path) -> dict | None:
+def build(folder: Path) -> dict | None:
     """The session's ePCR, or None until the extraction service has taken in a segment
-    (structured/progress.json)."""
-    progress = read_json(structured / "progress.json")
+    (extractions/progress.json)."""
+    progress = read_json(folder / "progress.json")
     if not isinstance(progress, dict):
         return None
     now = progress.get("end") if isinstance(progress.get("end"), (int, float)) else None
-    raw = {c: read_json(structured / f"{c}.json") for c in CATEGORIES}
+    raw = {c: read_json(folder / f"{c}.json") for c in CATEGORIES}
 
     vitals = []
     for v in _items(raw["vital_signs"]):
@@ -143,7 +143,7 @@ def build(structured: Path) -> dict | None:
     interventions = _items(raw["interventions"])
 
     return {
-        "medications": _medications(read_json(structured / "medication_administrations.json"), now),
+        "medications": _medications(read_json(folder / "medication_administrations.json"), now),
         "interventions": interventions,
         "vital_signs": vitals,
         "demographics": list(latest.values()),
@@ -153,13 +153,13 @@ def build(structured: Path) -> dict | None:
     }
 
 
-def fingerprint(structured: Path) -> tuple:
+def fingerprint(folder: Path) -> tuple:
     """Changes whenever a file build() reads changes, for the page's ETag."""
     files = [*(f"{c}.json" for c in CATEGORIES), "medication_administrations.json", "progress.json"]
     out = []
     for name in files:
         try:
-            st = (structured / name).stat()
+            st = (folder / name).stat()
             out.append((name, st.st_mtime_ns, st.st_size))
         except OSError:
             out.append((name, None, None))

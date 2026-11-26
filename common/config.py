@@ -52,19 +52,33 @@ def env_getter(env_file: Optional[Union[str, Path]] = None) -> Callable[[str, Ca
     return get
 
 
-def shared_paths(get: Callable, service: str, log_name: str, defaults) -> dict[str, Any]:
-    """Settings every service derives from the shared .env directories.
+def shared_paths(get: Callable, log_name: str, defaults) -> dict[str, Any]:
+    """Settings every process (the model services, the server, the dashboard) derives from
+    the shared .env settings.
 
-    SESSIONS_DIR is the sessions root, BRIDGE_DIR holds <service>.sock and
-    LOGS_DIR holds <log_name>.log. A directory that is unset keeps the service's default.
-    Returns sessions_dir, bridge_path, log_level and log_file for Config(**...);
-    callers without a bridge socket (the server) drop bridge_path.
+    SESSIONS_DIR is the sessions root and LOGS_DIR holds <log_name>.log; a directory that
+    is unset keeps the default. Returns sessions_dir, log_level and log_file for Config(**...).
     """
-    bridge_dir = get("BRIDGE_DIR", str, None)
     logs_dir = get("LOGS_DIR", str, None)
     return {
         "sessions_dir": get("SESSIONS_DIR", str, defaults.sessions_dir),
-        "bridge_path": os.path.join(bridge_dir, f"{service}.sock") if bridge_dir else getattr(defaults, "bridge_path", None),
         "log_level": get("LOG_LEVEL", str, defaults.log_level),
         "log_file": os.path.join(logs_dir, f"{log_name}.log") if logs_dir else defaults.log_file,
+    }
+
+
+def status_path(status_dir: str, service: str) -> str:
+    """Where a model service writes its heartbeat: <STATUS_DIR>/<service>.json."""
+    return os.path.join(status_dir, f"{service}.json")
+
+
+def service_settings(get: Callable, service: str, defaults) -> dict[str, Any]:
+    """Settings every model service shares: status_path (its heartbeat, in STATUS_DIR; unset
+    keeps the default), max_session_age (SESSION_MAX_AGE, seconds) and abandon_timeout
+    (SESSION_ABANDON_TIMEOUT, seconds)."""
+    status_dir = get("STATUS_DIR", str, None)
+    return {
+        "status_path": status_path(status_dir, service) if status_dir else defaults.status_path,
+        "max_session_age": get("SESSION_MAX_AGE", float, defaults.max_session_age),
+        "abandon_timeout": get("SESSION_ABANDON_TIMEOUT", float, defaults.abandon_timeout),
     }

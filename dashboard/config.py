@@ -12,8 +12,8 @@ class Config:
     # Address and port the dashboard's web page is served on.
     host: str = "0.0.0.0"
     port: int = 8080
-    # A session counts as live while none of its end markers exist and one of its
-    # files changed within this many seconds.
+    # A session that is still recording or processing counts as stalled once none of its
+    # files has changed for this many seconds.
     live_window: float = 120.0
     log_level: str = "INFO"
     log_file: Optional[str] = None
@@ -27,10 +27,8 @@ class Config:
         """
         get = env_getter(env_file)
         defaults = cls()
-        shared = shared_paths(get, "dashboard", "dashboard", defaults)
-        shared.pop("bridge_path")  # the dashboard has no bridge socket
         return cls(
-            **shared,
+            **shared_paths(get, "dashboard", defaults),
             host=get("DASHBOARD_HOST", str, defaults.host),
             port=get("DASHBOARD_PORT", int, defaults.port),
             live_window=get("DASHBOARD_LIVE_WINDOW", float, defaults.live_window),

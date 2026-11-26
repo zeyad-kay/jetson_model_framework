@@ -2,9 +2,11 @@
 
     GET /                         the page (static/index.html)
     GET /static/<file>            its scripts and styles
-    GET /api/sessions             [{id, started, updated, live, has_epcr}], newest first
-    GET /api/sessions/<id>        {id, started, updated, live, epcr, wounds}, where epcr is built
-                                  from <session>/structured/ (<category>.json and
+    GET /api/sessions             [{id, started, updated, state, live, waiting, problems, has_epcr}],
+                                  newest first (see Sessions.summary)
+    GET /api/sessions/<id>        {id, started, updated, state, live, waiting, problems, epcr, wounds,
+                                  download}, where epcr is built
+                                  from <session>/extractions/ (<category>.json and
                                   medication_administrations.json, see epcr.py), null until the
                                   extraction service has taken in its first segment, and wounds
                                   lists the wound images a model has predicted,
@@ -16,7 +18,14 @@
     GET /api/sessions/<id>/wounds/<name>
                                   one of those images, or a .box file: its bounding boxes, one
                                   "x0 y0 x1 y1" line of image pixels per box
+    GET /api/sessions/<id>/download
+                                  session-<id>.zip of the session's recordings as the server
+                                  exported them when it stopped recording (audio/audio.mp3,
+                                  video/video.mp4; those that exist), streamed; 404 until the
+                                  session has stopped recording and one exists. The detail's
+                                  download is {url, files} then, else null.
 
+A session is a folder with session.json (the server writes it when it creates the session).
 Times are Unix seconds. /api/sessions/<id> carries an ETag, so a page polling it gets
 304 Not Modified until the session changes. Nothing is ever written.
 """
@@ -26,27 +35,38 @@ import mimetypes
 import os
 import re
 import time
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 from common.log import get_logger
-from dashboard.epcr import build, fingerprint
+from dashboard.epcr import build, fingerprint, read_json
 
 log = get_logger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# Files whose changes mean the session is still being recorded or processed.
-ACTIVITY_FILES = ("audio/audio.pcm", "video/video.ts", "transcript/segments.json",
-                  "structured/progress.json")
-# Files written once a session is over: the server's exports at stop_session, and the
-# extraction service's mark that it has extracted the last segment.
-END_FILES = ("audio/audio.mp3", "video/video.mp4", "structured/extractions.done")
+# Files (and folders) whose changes mean the session is still being recorded or processed.
+ACTIVITY_FILES = ("audio/audio.pcm", "video/video.ts", "transcript/transcript.jsonl",
+                  "transcript/segments.json", "extractions/progress.json", "video/wounds")
+# What each part of a session writes, and its name on the page. Each is marked complete by a
+# done marker next to it, <path>.done = {"status": "ok", "failed", "abandoned" or "aborted"}
+# (common.io.done_marker): the recordings by the server when recording stops (or "aborted" on
+# its next start, if it was cut off), and each output by its model service when it is done.
+RECORDINGS = {"audio/audio.pcm": "audio recording", "video/video.ts": "video recording"}
+OUTPUTS = {  # by the service name session.json lists
+    "asr_service": ("transcript/segments.json", "transcription"),
+    "llm_extraction_service": ("extractions/extractions", "extraction"),
+    "video_service": ("video/wounds", "wound detection"),
+}
 # Where a model writes its predicted wound images, inside a session's folder.
 WOUNDS_DIR = Path("video") / "wounds"
 WOUND_SUFFIXES = (".jpg", ".jpeg", ".png")
+# The recordings the server exports when it stops recording, as the download names them. The
+# exports are written atomically (common.io), so one that exists is complete.
+EXPORTS = {"audio/audio.mp3": "audio.mp3", "video/video.mp4": "video.mp4"}
 VIDEO_SECONDS_NAME = re.compile(r"\d+(\.\d+)?")  # the video service's names: 000012.340
 BOX_SUFFIX = ".box"  # an image's bounding boxes, written by the video service next to it
 mimetypes.add_type("text/plain", BOX_SUFFIX)
@@ -56,6 +76,16 @@ def video_seconds(file: Path) -> float | None:
     """The video position in a wound image's name (000012.340.jpg -> 12.34); None if it has none."""
     # Strict: float() would also take "000000_2" (underscores), "inf" or "1e3".
     return float(file.stem) if VIDEO_SECONDS_NAME.fullmatch(file.stem) else None
+
+
+def marker_status(path: Path) -> str | None:
+    """The status in path's done marker ("ok", "failed", ...); None while there is no marker."""
+    marker = path.with_name(path.name + ".done")
+    if not marker.exists():
+        return None
+    data = read_json(marker)
+    status = data.get("status") if isinstance(data, dict) else None
+    return status if isinstance(status, str) else "unknown"
 
 
 def mtime(path: Path) -> float | None:
@@ -77,25 +107,58 @@ class Sessions:
         if not session_id or Path(session_id).name != session_id or session_id.startswith("."):
             return None
         path = self.sessions_dir / session_id
-        return path if path.is_dir() else None
+        return path if (path / "session.json").is_file() else None
+
+    @staticmethod
+    def outputs(path: Path) -> list[tuple[str, str]]:
+        """(path, name) of the outputs the session waits for: those of the services its session.json
+        lists, or of every service if it lists none."""
+        info = read_json(path / "session.json")
+        services = info.get("services") if isinstance(info, dict) else None
+        if not isinstance(services, list):
+            services = list(OUTPUTS)
+        return [OUTPUTS[s] for s in OUTPUTS if s in services]
 
     def summary(self, path: Path) -> dict:
+        """The session at a glance:
+
+            state     "recording" until the server marks both recordings complete, then
+                      "processing" until every service the session is for marks its output
+                      complete, then "done"; "stalled" instead of recording or processing once
+                      nothing has changed for live_window seconds (e.g. a service is down)
+            live      whether it is recording or processing
+            waiting   the names of what isn't marked complete yet ("extraction", ...)
+            problems  [{"what", "status"}] for each marker whose status isn't "ok"
+        """
         times = [t for t in (mtime(path / f) for f in ACTIVITY_FILES) if t is not None]
         started = mtime(path)  # the server creates the folder and its subfolders when the session starts
         updated = max(times) if times else started
-        ended = any((path / f).exists() for f in END_FILES)
-        live = not ended and updated is not None and time.time() - updated <= self.live_window
+        recordings = [(name, marker_status(path / f)) for f, name in RECORDINGS.items()]
+        outputs = [(name, marker_status(path / f)) for f, name in self.outputs(path)]
+        waiting = [name for name, status in recordings + outputs if status is None]
+        problems = [{"what": name, "status": status} for name, status in recordings + outputs
+                    if status not in (None, "ok")]
+        if not waiting:
+            state = "done"
+        elif updated is not None and time.time() - updated > self.live_window:
+            state = "stalled"
+        else:
+            state = "recording" if any(status is None for _, status in recordings) else "processing"
         return {
             "id": path.name,
             "started": started,
             "updated": updated,
-            "live": live,
-            "has_epcr": (path / "structured" / "progress.json").is_file(),
+            "state": state,
+            "live": state in ("recording", "processing"),
+            "waiting": waiting,
+            "problems": problems,
+            "has_epcr": (path / "extractions" / "progress.json").is_file(),
         }
 
     def list(self) -> list[dict]:
         try:
-            folders = [p for p in self.sessions_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            folders = [p for p in self.sessions_dir.iterdir()
+                       if not p.name.startswith(".") and (p / "session.json").is_file()]
         except FileNotFoundError:
             return []
         return sorted((self.summary(p) for p in folders), key=lambda s: s["started"] or 0, reverse=True)
@@ -136,21 +199,50 @@ class Sessions:
         file = path / WOUNDS_DIR / name
         return file if file.is_file() else None
 
+    @staticmethod
+    def exports(path: Path) -> "list[tuple[Path, str]]":  # quoted: list is a method of this class
+        """(file, name in the zip) of the session's exported recordings, once it has stopped
+        recording (both recordings marked complete; the server exports them after that).
+        Empty before, or if neither was exported."""
+        if any(marker_status(path / f) is None for f in RECORDINGS):
+            return []
+        return [(path / f, name) for f, name in EXPORTS.items() if (path / f).is_file()]
+
     def detail(self, path: Path) -> tuple[dict, str]:
-        """The session's summary with its ePCR and wound images, and an ETag for it."""
-        structured = path / "structured"
+        """The session's summary with its ePCR, wound images and download, and an ETag for it."""
+        extractions = path / "extractions"
         summary = self.summary(path)
-        epcr = build(structured)
+        epcr = build(extractions)
         wounds = self.wounds(path)
+        exports = [name for _, name in self.exports(path)]
+        download = {"url": f"/api/sessions/{quote(path.name)}/download", "files": exports} if exports else None
         summary.pop("has_epcr")
-        changes = (fingerprint(structured), summary["live"], tuple((w["name"], w["time"]) for w in wounds))
+        changes = (fingerprint(extractions), summary["state"], tuple(summary["waiting"]),
+                   tuple((p["what"], p["status"]) for p in summary["problems"]),
+                   tuple((w["name"], w["time"]) for w in wounds), tuple(exports))
         etag = f'"{hash(changes) & 0xFFFFFFFFFFFF:x}"'
-        return {**summary, "epcr": epcr, "wounds": wounds}, etag
+        return {**summary, "epcr": epcr, "wounds": wounds, "download": download}, etag
+
+
+def write_zip(out, files: "list[tuple[Path, str]]") -> None:
+    """Writes a zip of files ((file, name in the zip)) to the stream `out`, which needn't be
+    seekable, reading each file in chunks. Stored, not compressed: mp3 and mp4 already are."""
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_STORED) as zf:
+        for file, name in files:
+            zf.write(file, arcname=name)
 
 
 def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "dashboard"
+
+        def handle(self) -> None:
+            # The browser drops a response it no longer wants (an image stepped past before
+            # it loaded, a page closed mid-poll); without this each one prints a traceback.
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                log.debug("%s closed the connection before the response was sent", self.address_string())
 
         def do_GET(self) -> None:
             path = unquote(urlsplit(self.path).path)
@@ -165,6 +257,11 @@ def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:
                 folder = sessions.folder(parts[0])
                 if folder is None:
                     return self.send_error(HTTPStatus.NOT_FOUND, "no such session")
+                if len(parts) == 2 and parts[1] == "download":
+                    files = sessions.exports(folder)
+                    if not files:
+                        return self.send_error(HTTPStatus.NOT_FOUND, "no recordings to download yet")
+                    return self.send_zip(f"session-{folder.name}.zip", files)
                 if len(parts) == 3 and parts[1] == "wounds":
                     file = sessions.wound_file(folder, parts[2])
                     if file is None:
@@ -198,6 +295,19 @@ def make_handler(sessions: Sessions) -> type[BaseHTTPRequestHandler]:
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(data)
+
+        def send_zip(self, filename: str, files: "list[tuple[Path, str]]") -> None:
+            """Streams a zip of files as a download. Its length isn't known up front, so the
+            response ends when the connection closes (the server speaks HTTP/1.0)."""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                write_zip(self.wfile, files)
+            except (BrokenPipeError, ConnectionResetError):
+                log.info("download of %s cancelled", filename)
 
         def send_json(self, obj, etag: str | None = None) -> None:
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")

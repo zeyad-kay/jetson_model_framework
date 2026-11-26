@@ -10,7 +10,7 @@ def main() -> None:
     config = Config.load()
     setup_logging("llm_extraction_service", level=config.log_level, log_file=config.log_file, also_stderr=True)
     log.info("starting llm_extraction_service")
-    run_service(LLMExtractionService(config), config.bridge_path, log)
+    run_service(LLMExtractionService(config))
     log.info("llm_extraction_service stopped")
 
 

@@ -18,7 +18,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -48,12 +48,12 @@ services:
       # SUBLIBRARY_VERSION_MISMATCH; put the system copy first so only it is loaded.
       LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     # healthcheck:
-      # Healthy once the bridge answers a ping with a pong (socket = $BRIDGE_DIR/asr_service.sock).
+      # Healthy while the service's heartbeat ($STATUS_DIR/asr_service.json) is fresh and it is idle or working.
       # test:
       #   - CMD
       #   - python
       #   - -c
-      #   - 'import socket,json;s=socket.socket(socket.AF_UNIX);s.settimeout(2);s.connect("/run/bridge/asr_service.sock");s.sendall(b"{\"command\":\"ping\"}\n");r=json.loads(s.makefile("rb").readline());raise SystemExit(0 if r.get("reply")=="pong" else 1)'
+      #   - 'import json,time;s=json.load(open("/run/status/asr_service.json"));raise SystemExit(0 if s.get("state") in ("idle","working") and time.time()-s.get("updated",0)<15 else 1)'
       # interval: 5s
       # timeout: 3s
       # retries: 5
@@ -67,7 +67,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -104,7 +104,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -141,7 +141,7 @@ services:
         target: ${LOGS_DIR:-/logs}
       - type: bind
         source: ./run
-        target: ${BRIDGE_DIR:-/run/bridge}
+        target: ${STATUS_DIR:-/run/status}
       # Code is mounted over the copy baked into the image; restart the service to pick up edits.
       - type: bind
         source: ./common
@@ -215,8 +215,8 @@ services:
     # Host networking so the default --host 127.0.0.1 reaches the server on this machine.
     network_mode: host
 
-  # Per-service integration tests: each drives one service directly over its bridge
-  # socket, without the server, and checks its output. Needs the service running:
+  # Per-service integration tests: each drives one service on its own, without the server,
+  # through a session folder made for that service alone, and checks its output. Needs the service running:
   #   docker compose run --rm asr_test       # asr_service
   #   docker compose run --rm video_test     # video_service
   #   docker compose run --rm llm_extraction_test    # llm_extraction_service
@@ -232,9 +232,6 @@ services:
       - type: bind
         source: ./sessions
         target: /sessions
-      - type: bind
-        source: ./run
-        target: /run/bridge
       - type: bind
         source: ./logs
         target: /logs
@@ -252,3 +249,12 @@ services:
   llm_extraction_test:
     <<: *service_test
     entrypoint: ["python3", "/tests/integration/extraction/main.py"]
+
+  # Integration test for the server on its own: drives it like the phone app and checks what it
+  # records. Needs only the server (no GPU, no model services), and no real session in progress:
+  #   docker compose up -d server && docker compose run --rm server_test
+  server_test:
+    <<: *service_test
+    entrypoint: ["python3", "/tests/integration/server/main.py"]
+    # Host networking, like the server: the control port, RTSP and MediaMTX's local-only API.
+    network_mode: host

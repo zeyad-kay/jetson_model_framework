@@ -3,22 +3,22 @@ import glob
 import json
 import os
 import re
-import threading
-import time
-from collections.abc import Generator
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from common.log import get_logger
+from common.model import StreamingModel
 from common.singleton import SingletonMeta
-from common.utils import as_list, quote_time, read_segments, word_tokens
+from common.utils import as_list, quote_time, word_tokens
 from llm_extraction_service import schema
 
 log = get_logger(__name__)
 
 
-class LLMModel(metaclass=SingletonMeta):
-    """Blueprint for LLM models. Subclasses override extract.
+class LLMModel(StreamingModel, metaclass=SingletonMeta):
+    """Blueprint for LLM models. Subclasses implement _llm_call() and the StreamingModel
+    steps (start, predict, stop).
 
     There is one instance per class rather than one across the whole hierarchy.
     """
@@ -60,7 +60,7 @@ class LLMModel(metaclass=SingletonMeta):
         """Torch dtype the weights are loaded in, e.g. "bfloat16"."""
         return self._dtype
 
-    def generate(self, messages: list[dict]) -> str:
+    def _llm_call(self, messages: list[dict]) -> str:
         """Reply to a chat, a list of {"role", "content"} messages. Subclasses implement it."""
         raise NotImplementedError
 
@@ -126,17 +126,6 @@ class LLMModel(metaclass=SingletonMeta):
             raise ValueError(f"no fragment in {shared_path} for {', '.join('{' + u + '}' for u in unfilled)}")
         return text
 
-    def extract(self, input_path: str) -> Generator[dict[str, Any], None, None]:
-        """Run the model over the input at input_path and yield the records it produces.
-
-        The base implementation only validates that the path exists.
-        Subclasses should call super().extract(input_path) before
-        running inference.
-        """
-        if not os.path.exists(input_path):
-            raise FileNotFoundError(f"Input not found: {input_path}")
-        yield {}
-
 
 # ── Qwen extraction ──────────────────────────────────────────────────────────
 
@@ -146,11 +135,12 @@ class QwenExtractor(LLMModel):
     The model is loaded on the GPU with transformers; decoding is greedy, and
     Qwen3 hybrid models are kept out of thinking mode.
 
-    extract() follows the segments.json the ASR service writes to
-    <session>/transcript/ while it is still growing. There is one prompt per
-    category, named after it (prompts/separated/medications.txt returns the
-    medications). Each category's extractions are a log of records, one per
-    segment that stated something new, as in templates/:
+    A session is start(), then predict(segment) for each segment of the transcript in
+    order (the service reads them from the segments.json the ASR service writes), then
+    stop(). There is one prompt per category, named after it
+    (prompts/separated/medications.txt returns the medications). Each category's
+    extractions are a log of records, one per segment that stated something new, as in
+    templates/:
 
         [{"segment": 1, "extractions": [{...}, ...]}, {"segment": 3, "extractions": [...]}]
 
@@ -177,7 +167,7 @@ class QwenExtractor(LLMModel):
 
     # Each category, in order, and whether it is still being extracted: all start True, and one
     # turns False once it is complete and QUIET_SEGMENTS segments have added nothing to it since.
-    # Each extract() run works on its own copy (self._extracting), so every session starts here.
+    # Each session works on its own copy (self._extracting, set by start()), so every session starts here.
     CATEGORIES = {
         "medications": True,
         "interventions": True,
@@ -207,8 +197,6 @@ class QwenExtractor(LLMModel):
         link_threshold: float = 0.70,
         rxnav: bool = False,
         index_dir: str | None = None,
-        poll_interval: float = 0.5,
-        drain_idle: float = 5.0,
     ):
         """prompt_path is a directory with exactly one prompt per category,
         <category>.txt; a file named after no category, or a category with no
@@ -216,21 +204,10 @@ class QwenExtractor(LLMModel):
         network) codes to medications and ICD-10-PCS codes to interventions,
         using the embedding index in index_dir; the dashboard names
         medications by their ATC concept when linked.
-
-        poll_interval is how often segments.json is re-read for new segments.
-        After finish(), extract() ends once there are no new segments and the
-        file has not changed for drain_idle seconds, which gives the ASR
-        service time to write the segment it closes at the end of a session.
         """
         super().__init__(model_id, prompt_path, max_new_tokens, dtype)
-        self._poll_interval = poll_interval
-        self._drain_idle = drain_idle
-        self._finish_event = threading.Event()
         # The prompts are loaded by LLMModel; the linker loads next, both before the weights.
-        self._parse_failures = 0
-        self._validation_errors = 0
-        self._extracting = dict(self.CATEGORIES)
-        self._quiet = {c: 0 for c in self.CATEGORIES}  # segments in a row that added nothing to c
+        self.start()  # the per-session state, so _predict() works before a start() too
         # Each prompt returns the category it is named after, and every category has one.
         unknown = sorted(set(self._prompts) - set(self.CATEGORIES))
         missing = [c for c in self.CATEGORIES if c not in self._prompts]
@@ -259,7 +236,7 @@ class QwenExtractor(LLMModel):
             model_id, dtype=getattr(torch, dtype), device_map="auto"
         )
 
-    def generate(self, messages: list[dict]) -> str:
+    def _llm_call(self, messages: list[dict]) -> str:
         tok = self._tokenizer
         try:  # Qwen3 hybrid models: keep them out of thinking mode
             prompt = tok.apply_chat_template(
@@ -326,10 +303,10 @@ class QwenExtractor(LLMModel):
             fragments[f"{c}_entity_list"] = "\n".join(f"- {e}: {described[e]}" for e in entities)
         return fragments
 
-    JSON_REPAIRS = 4  # stray closing brackets _extract_json drops from one reply
+    JSON_REPAIRS = 4  # stray closing brackets _parse_model_output drops from one reply
 
     @staticmethod
-    def _extract_json(reply: str) -> dict | None:
+    def _parse_model_output(reply: str) -> dict | None:
         """The first {...} object in a model reply, parsed; None if there is none.
 
         The model sometimes closes an item with a wrong bracket ({"extractions": [{...}}]} or
@@ -383,80 +360,52 @@ class QwenExtractor(LLMModel):
 
     @property
     def parse_failures(self) -> int:
-        """Model replies with no parseable JSON object in the last extract() run."""
+        """Model replies with no parseable JSON object in the current (or last) session."""
         return self._parse_failures
 
     @property
     def validation_errors(self) -> int:
         """Invalid items and quotes not found in the transcript, dropped by validation (schema.py),
-        in the last extract() run."""
+        in the current (or last) session."""
         return self._validation_errors
 
-    def finish(self) -> None:
-        """Ask a running extract() to take in the segments still to come, then end.
+    def start(self, categories: Optional[Iterable[str]] = None) -> None:
+        """Begins a session: no extractions yet, every category extracted, the counters at zero.
 
-        It keeps reading segments.json until the file has stopped changing
-        for drain_idle seconds, so segments the ASR service writes while
-        finishing its own session are extracted too.
+        categories limits the session to those categories (the others are never prompted
+        and stay empty); by default every category in CATEGORIES is extracted.
         """
-        self._finish_event.set()
-
-    def extract(self, segments_path: str) -> Generator[dict[str, Any], None, None]:
-        """Yield the extractions after each segment of the (possibly still growing) segments.json,
-        in order.
-
-        A record is {"segment", "start", "end", <category>: [...], ...,
-        "medication_administrations": [...]}: the segment's id and times, every
-        category's records once that segment is taken in, and the current state of each
-        medication administration (schema.merge_medications). The
-        ASR service writes only closed segments and replaces the file
-        atomically, so each segment is read once, complete.
-
-        Runs until finish() is called and the file is drained, or the
-        generator is closed.
-        """
-        for _ in super().extract(segments_path):  # validates the path exists
-            pass
-
-        self._finish_event.clear()
+        if categories is not None:
+            categories = set(categories)
+            unknown = sorted(categories - set(self.CATEGORIES))
+            if unknown:
+                raise ValueError(f"unknown categories: {', '.join(unknown)} (known: {', '.join(self.CATEGORIES)})")
         self._parse_failures = 0
         self._validation_errors = 0
-        self._extracting = dict(self.CATEGORIES)
+        self._extracting = {c: on and (categories is None or c in categories) for c, on in self.CATEGORIES.items()}
         self._quiet = {c: 0 for c in self.CATEGORIES}  # segments in a row that added nothing to c
-        extractions = {c: [] for c in self.CATEGORIES}
-        last_id = 0  # segment_id of the last segment extracted
-        last_change = time.monotonic()  # when segments.json was last seen to change
-        last_mtime = None
-        finish_time = None
+        self._extractions = {c: [] for c in self.CATEGORIES}
 
-        while True:
-            new = [s for s in read_segments(segments_path) if s.get("segment_id", 0) > last_id]
-            for segment in new:
-                extractions = self.apply_segment(segment, extractions)
-                yield {"segment": segment.get("segment_id"), "start": segment.get("start"),
-                       "end": segment.get("end"), **copy.deepcopy(extractions),
-                       "medication_administrations": schema.merge_medications(extractions["medications"])}
-                last_id = segment["segment_id"]
-            if new:
-                continue  # more may have arrived while the model was busy
+    def predict(self, segment: dict) -> dict[str, Any]:
+        """Takes in the session's next segment and returns the extractions once it is in.
 
-            try:
-                mtime = os.stat(segments_path).st_mtime_ns
-            except FileNotFoundError:
-                mtime = None
-            if mtime != last_mtime:
-                last_mtime, last_change = mtime, time.monotonic()
+        segment is one entry of the ASR service's segments.json: {"segment_id", "start",
+        "end", "text": [{"word", "start", "end"}]}; segments must come in order, each once.
+        The result is {"segment", "start", "end", <category>: [...], ...,
+        "medication_administrations": [...]}: the segment's id and times, every category's
+        records so far (a copy), and the current state of each medication administration
+        (schema.merge_medications).
+        """
+        self._extractions = self._predict(segment, self._extractions)
+        return {"segment": segment.get("segment_id"), "start": segment.get("start"),
+                "end": segment.get("end"), **copy.deepcopy(self._extractions),
+                "medication_administrations": schema.merge_medications(self._extractions["medications"])}
 
-            if self._finish_event.is_set():
-                if finish_time is None:
-                    finish_time = time.monotonic()
-                # Idle counts from finish() at the earliest, so the ASR service
-                # gets drain_idle seconds to write its final segment.
-                if time.monotonic() - max(last_change, finish_time) >= self._drain_idle:
-                    return
-            time.sleep(self._poll_interval)
+    def stop(self) -> None:
+        """Ends the session, dropping its extractions; parse_failures and validation_errors keep its counts."""
+        self._extractions = {c: [] for c in self.CATEGORIES}
 
-    def apply_segment(self, segment: dict, previous_extractions: dict[str, list]) -> dict[str, list]:
+    def _predict(self, segment: dict, previous_extractions: dict[str, list]) -> dict[str, list]:
         """The extractions once segment ({"segment_id", "start", "end", "text": [{"word", "start",
         "end"}]}) is taken in: previous_extractions ({category: records}), with a new record
         pushed onto each category the segment states something new for. previous_extractions
@@ -474,7 +423,7 @@ class QwenExtractor(LLMModel):
         for c, extracting in self._extracting.items():
             if not extracting:
                 continue  # done: demographics or mechanism_of_injury
-            obj = self._extract_json(self.generate([
+            obj = self._parse_model_output(self._llm_call([
                 {"role": "system", "content": self._prompts[c]},
                 {"role": "user", "content": self._user_message(transcript, previous_extractions[c], c)},
             ]))
